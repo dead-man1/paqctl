@@ -1600,7 +1600,7 @@ GFK_DIR="\${INSTALL_DIR}/gfk"
 ROLE="${ROLE}"
 
 # Source config for ports
-[ -f "\${INSTALL_DIR}/paqctl.conf" ] && . "\${INSTALL_DIR}/paqctl.conf"
+[ -f "\${INSTALL_DIR}/settings.conf" ] && . "\${INSTALL_DIR}/settings.conf"
 
 # Apply firewall rules (server only)
 if [ "\$ROLE" = "server" ]; then
