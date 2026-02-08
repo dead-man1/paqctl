@@ -3674,7 +3674,11 @@ show_status() {
         else
             echo -e "  Mappings:   ${GFK_PORT_MAPPINGS}"
             local _fv
-            _fv=$(echo "${GFK_PORT_MAPPINGS:-14000:443}" | cut -d, -f1 | cut -d: -f1)
+            if [ -n "${GFK_SOCKS_VIO_PORT:-}" ]; then
+                _fv="$GFK_SOCKS_VIO_PORT"
+            else
+                _fv=$(echo "${GFK_PORT_MAPPINGS:-14000:443}" | cut -d, -f1 | cut -d: -f1)
+            fi
             echo -e "  Proxy:      ${GREEN}SOCKS5 127.0.0.1:${_fv}${NC} (set as browser proxy)"
         fi
     else
@@ -3807,7 +3811,11 @@ health_check() {
         # 7. SOCKS5 port (client)
         if [ "$ROLE" = "client" ]; then
             local _socks_vio
-            _socks_vio=$(echo "${GFK_PORT_MAPPINGS:-14000:443}" | cut -d, -f1 | cut -d: -f1)
+            if [ -n "${GFK_SOCKS_VIO_PORT:-}" ]; then
+                _socks_vio="$GFK_SOCKS_VIO_PORT"
+            else
+                _socks_vio=$(echo "${GFK_PORT_MAPPINGS:-14000:443}" | cut -d, -f1 | cut -d: -f1)
+            fi
             if is_running && ss -tlnp 2>/dev/null | grep -q ":${_socks_vio} "; then
                 echo -e "  ${GREEN}✓${NC} SOCKS5 port ${_socks_vio} is listening"
             elif is_running; then
@@ -5771,6 +5779,69 @@ install_additional_backend() {
     log_info "Installing ${new_backend}..."
 
     if [ "$new_backend" = "gfw-knocker" ]; then
+        # Collect GFK configuration for client role
+        if [ "$ROLE" = "client" ]; then
+            echo ""
+            echo -e "${BOLD}GFK Client Configuration${NC}"
+            echo -e "${DIM}(these must match your server settings)${NC}"
+            echo ""
+
+            echo -e "${BOLD}Server IP${NC} (server's public IP):"
+            read -p "  IP: " input < /dev/tty || true
+            if [ -z "$input" ] || ! _validate_ip "$input"; then
+                log_error "Valid server IP is required."
+                read -n 1 -s -r -p "  Press any key..." < /dev/tty || true
+                return 1
+            fi
+            GFK_SERVER_IP="$input"
+
+            echo -e "${BOLD}Server's VIO TCP port${NC} [45000] (must match server):"
+            read -p "  Port: " input < /dev/tty || true
+            GFK_VIO_PORT="${input:-45000}"
+            if ! _validate_port "$GFK_VIO_PORT"; then
+                log_warn "Invalid port. Using default 45000."
+                GFK_VIO_PORT=45000
+            fi
+
+            echo -e "${BOLD}Local VIO client port${NC} [40000]:"
+            read -p "  Port: " input < /dev/tty || true
+            GFK_VIO_CLIENT_PORT="${input:-40000}"
+            if ! _validate_port "$GFK_VIO_CLIENT_PORT"; then
+                log_warn "Invalid port. Using default 40000."
+                GFK_VIO_CLIENT_PORT=40000
+            fi
+
+            echo -e "${BOLD}Server's QUIC port${NC} [25000] (must match server):"
+            read -p "  Port: " input < /dev/tty || true
+            GFK_QUIC_PORT="${input:-25000}"
+            if ! _validate_port "$GFK_QUIC_PORT"; then
+                log_warn "Invalid port. Using default 25000."
+                GFK_QUIC_PORT=25000
+            fi
+
+            echo -e "${BOLD}Local QUIC client port${NC} [20000]:"
+            read -p "  Port: " input < /dev/tty || true
+            GFK_QUIC_CLIENT_PORT="${input:-20000}"
+            if ! _validate_port "$GFK_QUIC_CLIENT_PORT"; then
+                log_warn "Invalid port. Using default 20000."
+                GFK_QUIC_CLIENT_PORT=20000
+            fi
+
+            echo -e "${BOLD}QUIC auth code${NC} (from server setup):"
+            read -p "  Auth code: " input < /dev/tty || true
+            if [ -z "$input" ]; then
+                log_error "Auth code is required."
+                read -n 1 -s -r -p "  Press any key..." < /dev/tty || true
+                return 1
+            fi
+            GFK_AUTH_CODE="$input"
+
+            echo -e "${BOLD}TCP port mappings${NC} (must match server) [14000:443]:"
+            read -p "  Mappings: " input < /dev/tty || true
+            GFK_PORT_MAPPINGS="${input:-14000:443}"
+            echo ""
+        fi
+
         # Install GFK without changing current backend
         if ! _install_gfk_components; then
             log_error "Failed to install ${new_backend}"
@@ -6223,6 +6294,8 @@ _install_gfk_components() {
     # Setup Xray (server only — adds SOCKS5 alongside panel if detected)
     if [ "$ROLE" = "server" ]; then
         setup_xray_for_gfk || return 1
+    elif [ "$ROLE" = "client" ]; then
+        create_gfk_client_wrapper
     fi
 
     # Generate parameters.py config
@@ -6803,7 +6876,13 @@ show_connection_info() {
         echo -e "  ${YELLOW}╚═══════════════════════════════════════════════════════════╝${NC}"
         echo ""
         echo -e "  ${DIM}VIO port: ${GFK_VIO_PORT:-45000} | QUIC port: ${GFK_QUIC_PORT:-25000}${NC}"
-        echo -e "  ${DIM}Client proxy: 127.0.0.1:14000 (SOCKS5)${NC}"
+        local _gfk_proxy_port
+        if [ -n "${GFK_SOCKS_VIO_PORT:-}" ]; then
+            _gfk_proxy_port="$GFK_SOCKS_VIO_PORT"
+        else
+            _gfk_proxy_port=$(echo "${GFK_PORT_MAPPINGS:-14000:443}" | cut -d, -f1 | cut -d: -f1)
+        fi
+        echo -e "  ${DIM}Client proxy: 127.0.0.1:${_gfk_proxy_port} (SOCKS5)${NC}"
         echo ""
     fi
 
@@ -6880,7 +6959,12 @@ show_menu() {
             # GFK status
             if [ "$gfk_installed" = true ]; then
                 if is_gfk_running; then
-                    local _gfk_sv; _gfk_sv=$(echo "${GFK_PORT_MAPPINGS:-14000:443}" | cut -d, -f1 | cut -d: -f1)
+                    local _gfk_sv
+                    if [ -n "${GFK_SOCKS_VIO_PORT:-}" ]; then
+                        _gfk_sv="$GFK_SOCKS_VIO_PORT"
+                    else
+                        _gfk_sv=$(echo "${GFK_PORT_MAPPINGS:-14000:443}" | cut -d, -f1 | cut -d: -f1)
+                    fi
                     echo -e "  GFK:         ${GREEN}● Running${NC}  |  VIO: ${GFK_VIO_PORT:-45000}  |  SOCKS5: 127.0.0.1:${_gfk_sv}"
                 else
                     echo -e "  GFK:         ${RED}○ Stopped${NC}  |  VIO: ${GFK_VIO_PORT:-45000}"
@@ -7380,7 +7464,11 @@ main() {
             echo -e "${YELLOW}╚═══════════════════════════════════════════════════════════════╝${NC}"
         else
             local _socks_vio
-            _socks_vio=$(echo "${GFK_PORT_MAPPINGS:-14000:443}" | cut -d, -f1 | cut -d: -f1)
+            if [ -n "${GFK_SOCKS_VIO_PORT:-}" ]; then
+                _socks_vio="$GFK_SOCKS_VIO_PORT"
+            else
+                _socks_vio=$(echo "${GFK_PORT_MAPPINGS:-14000:443}" | cut -d, -f1 | cut -d: -f1)
+            fi
             echo -e "  Server:     ${BOLD}${GFK_SERVER_IP}${NC}"
             echo -e "  SOCKS5:     ${BOLD}127.0.0.1:${_socks_vio}${NC}"
             echo ""
