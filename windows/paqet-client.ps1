@@ -290,15 +290,28 @@ function Get-InstalledBackend {
 function Save-Settings {
     param([string]$Backend, [string]$ServerAddr = "", [string]$SocksPort = "1080")
 
-    $settings = @"
-BACKEND="$Backend"
-SERVER_ADDR="$ServerAddr"
-SOCKS_PORT="$SocksPort"
-"@
+    $existing = @{}
+    if (Test-Path $SettingsFile) {
+        Get-Content $SettingsFile -ErrorAction SilentlyContinue | ForEach-Object {
+            if ($_ -match '^([^=]+)="?(.*)"?$') {
+                $existing[$Matches[1]] = $Matches[2]
+            }
+        }
+    }
+
+    $existing["BACKEND"] = $Backend
+    if ($ServerAddr) { $existing["SERVER_ADDR"] = $ServerAddr }
+    if ($SocksPort) { $existing["SOCKS_PORT"] = $SocksPort }
+
     if (-not (Test-Path $InstallDir)) {
         New-Item -ItemType Directory -Path $InstallDir -Force | Out-Null
     }
-    [System.IO.File]::WriteAllText($SettingsFile, $settings)
+
+    $lines = @()
+    foreach ($key in $existing.Keys) {
+        $lines += "$key=`"$($existing[$key])`""
+    }
+    [System.IO.File]::WriteAllLines($SettingsFile, $lines)
 }
 
 #═══════════════════════════════════════════════════════════════════════
@@ -330,8 +343,13 @@ function Install-Paqet {
     }
 
     if (Test-Path $PaqetExe) {
-        Write-Info "paqet already installed"
-        return $true
+        $installedVer = Get-InstalledPaqetVersion
+        if ($installedVer -and $installedVer -ne $PaqetVersion) {
+            Write-Info "Updating existing paqet ($installedVer) to latest ($PaqetVersion)..."
+        } else {
+            Write-Info "paqet already installed ($($installedVer -or 'unknown version'))"
+            return $true
+        }
     }
 
     $zipUrl = "https://github.com/hanselime/paqet/releases/download/$PaqetVersion/paqet-windows-amd64-$PaqetVersion.zip"
@@ -351,6 +369,7 @@ function Install-Paqet {
 
     Write-Success "paqet installed to $InstallDir"
     Save-Settings -Backend "paqet"
+    Save-PaqetVersion -Version $PaqetVersion
     return $true
 }
 
@@ -445,6 +464,13 @@ function Start-Paqet {
     if (-not (Test-Path $ConfigFile)) {
         Write-Err "Config not found. Configure first."
         return
+    }
+
+    $installedVer = Get-InstalledPaqetVersion
+    if ($installedVer -and $installedVer -ne $PaqetVersion) {
+        Write-Warn "Notice: Installed paqet ($installedVer) differs from latest release ($PaqetVersion)."
+        Write-Info "If you experience connection issues after a server update, use Option 7 (Update paqet)."
+        Write-Host ""
     }
 
     Write-Host ""
@@ -758,7 +784,15 @@ function Get-ClientStatus {
 #═══════════════════════════════════════════════════════════════════════
 
 function Get-InstalledPaqetVersion {
-    # Check settings file first for tracked version
+    if (Test-Path $PaqetExe) {
+        try {
+            $output = & $PaqetExe version 2>&1 | Out-String
+            if ($output -match 'Version:\s+([^\r\n]+)') {
+                return $Matches[1].Trim()
+            }
+        } catch {}
+    }
+    # Check settings file as backup
     if (Test-Path $SettingsFile) {
         $content = Get-Content $SettingsFile -ErrorAction SilentlyContinue
         foreach ($line in $content) {
@@ -766,10 +800,6 @@ function Get-InstalledPaqetVersion {
                 return $Matches[1]
             }
         }
-    }
-    # Fall back to pinned version if paqet is installed
-    if (Test-Path $PaqetExe) {
-        return $PaqetVersion
     }
     return $null
 }
