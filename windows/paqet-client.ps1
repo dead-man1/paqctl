@@ -49,7 +49,7 @@ $ErrorActionPreference = "Stop"
 # Directories and pinned versions (for stability - update after testing new releases)
 $InstallDir = "C:\paqet"
 $PaqetExe = "$InstallDir\paqet_windows_amd64.exe"
-$PaqetVersionPinned = "v1.0.0-alpha.17"   # Fallback if GitHub API unreachable
+$PaqetVersionPinned = "v1.0.0-alpha.20"   # Fallback if GitHub API unreachable
 $GfkDir = "$InstallDir\gfk"
 $ConfigFile = "$InstallDir\config.yaml"
 $SettingsFile = "$InstallDir\settings.conf"
