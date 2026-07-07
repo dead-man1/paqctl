@@ -7,7 +7,7 @@
 |_|             |_|
 ```
 
-[![Version](https://img.shields.io/badge/version-1.0.0-blue.svg)](https://github.com/SamNet-dev/paqctl/releases)
+[![Version](https://img.shields.io/badge/version-1.0.1-blue.svg)](https://github.com/SamNet-dev/paqctl/releases)
 [![License](https://img.shields.io/badge/license-AGPL--3.0-green.svg)](LICENSE)
 [![Server](https://img.shields.io/badge/server-Linux-lightgrey.svg)](https://github.com/SamNet-dev/paqctl)
 [![Client](https://img.shields.io/badge/client-Windows%20%7C%20macOS%20%7C%20Linux-green.svg)](https://github.com/SamNet-dev/paqctl)
@@ -373,7 +373,7 @@ You'll see an interactive menu:
 
 ```
 ===============================================
-  PAQET/GFK CLIENT MANAGER
+  PAQET/GFK CLIENT MANAGER (v1.0.1)
 ===============================================
 
   No backend installed yet
@@ -384,7 +384,13 @@ You'll see an interactive menu:
   4. Start client
   5. Stop client
   6. Show status
-  7. About (how it works)
+  7. Test server connection (Ping)
+  8. Update paqet
+  9. About (how it works)
+  10. Test DNS Leak & Proxy Routing
+  11. Speed & Bandwidth Test
+  12. Export / Import Config String
+  13. System Cleanup & Cache Flush
   0. Exit
 
   Select option:
@@ -1075,6 +1081,21 @@ sudo paqctl stop        # Stop the service
 sudo paqctl restart     # Restart the service
 sudo paqctl info        # Show connection info for clients
 sudo paqctl logs        # View recent logs
+
+# Diagnostics & Monitoring
+sudo paqctl monitor     # Active Client Monitor (live connection count & unique IPs)
+sudo paqctl speedtest   # Speed & Bandwidth test (Ookla / speedtest-cli / Cloudflare)
+sudo paqctl routing     # DNS Leak & Proxy Routing check
+
+# Security & Access Control
+sudo paqctl ban <ip>    # Ban an IP address (DROP traffic via firewalld/iptables)
+sudo paqctl unban <ip>  # Unban an IP address
+sudo paqctl rotate-key  # One-Click Encryption Key / Auth Code Rotation
+
+# Maintenance & QoL
+sudo paqctl cleanup     # System Cleanup (clean logs, temp files, drop OS caches)
+sudo paqctl export      # Export shareable config string (paqet://... or gfk://...)
+sudo paqctl import      # Import config string and start service
 ```
 
 ---
@@ -1508,7 +1529,7 @@ cd paqctl\windows
 
 ```
 ===============================================
-  PAQET/GFK CLIENT MANAGER
+  PAQET/GFK CLIENT MANAGER (v1.0.1)
 ===============================================
 
   1. Install paqet        (ساده، SOCKS5 همه‌کاره)
@@ -1517,6 +1538,13 @@ cd paqctl\windows
   4. Start client
   5. Stop client
   6. Show status
+  7. Test server connection (Ping)
+  8. Update paqet
+  9. About (how it works)
+  10. Test DNS Leak & Proxy Routing
+  11. Speed & Bandwidth Test
+  12. Export / Import Config String
+  13. System Cleanup & Cache Flush
   0. Exit
 
   Select option:
@@ -2094,6 +2122,7 @@ paqet.exe run -c config.yaml
 بعد از نصب روی VPS:
 
 ```bash
+# منوی اصلی و سریع
 sudo paqctl menu      # منوی تعاملی
 sudo paqctl status    # بررسی وضعیت
 sudo paqctl start     # شروع سرویس
@@ -2101,6 +2130,21 @@ sudo paqctl stop      # توقف سرویس
 sudo paqctl restart   # ریستارت
 sudo paqctl info      # اطلاعات اتصال
 sudo paqctl logs      # مشاهده لاگ‌ها
+
+# عیب‌یابی و مانیتورینگ
+sudo paqctl monitor     # مانیتورینگ کاربران فعال و آی‌پی‌های متصل
+sudo paqctl speedtest   # تست سرعت و پهنای باند سرور
+sudo paqctl routing     # بررسی نشت DNS و وضعیت روتینگ
+
+# امنیت و کنترل دسترسی
+sudo paqctl ban <ip>    # مسدودسازی آی‌پی مزاحم در فایروال
+sudo paqctl unban <ip>  # رفع مسدودی آی‌پی
+sudo paqctl rotate-key  # تغییر سریع و خودکار کلید رمزنگاری / کد احراز هویت
+
+# نگهداری و ابزارهای کاربردی
+sudo paqctl cleanup     # پاکسازی کش سیستم، لاگ‌های قدیمی و فایل‌های موقت
+sudo paqctl export      # دریافت رشته متنی کانفیگ برای اشتراک‌گذاری سریع
+sudo paqctl import      # وارد کردن رشته متنی کانفیگ و راه‌اندازی سریع
 ```
 
 ---

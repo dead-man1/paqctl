@@ -1,7 +1,7 @@
 #Requires -RunAsAdministrator
 <#
 .SYNOPSIS
-    Paqet/GFK Windows Client - Bypass Firewall Restrictions
+    Paqet/GFK Windows Client v1.0.1 - Bypass Firewall Restrictions
 
 .DESCRIPTION
     This script helps you connect to your server through firewalls that block normal connections.
@@ -47,6 +47,7 @@ param(
 $ErrorActionPreference = "Stop"
 
 # Directories and pinned versions (for stability - update after testing new releases)
+$ClientVersion = "v1.0.1"
 $InstallDir = "C:\paqet"
 $PaqetExe = "$InstallDir\paqet_windows_amd64.exe"
 $PaqetVersionPinned = "v1.0.0-alpha.20"   # Fallback if GitHub API unreachable
@@ -955,6 +956,235 @@ function Update-Paqet {
     return $true
 }
 
+function Test-ServerConnection {
+    $backend = Get-InstalledBackend
+    if (-not $backend) {
+        Write-Warn "Install a backend first (option 1 or 2)"
+        return
+    }
+
+    Write-Host ""
+    Write-Host "  TESTING SERVER CONNECTION" -ForegroundColor Cyan
+    Write-Host "  -------------------------" -ForegroundColor Cyan
+    Write-Host ""
+
+    if ($backend -eq "paqet") {
+        if (-not (Test-Path $PaqetExe)) {
+            Write-Err "paqet not installed"
+            return
+        }
+        if (-not (Test-Path $ConfigFile)) {
+            Write-Err "Config not found. Configure first (option 3)."
+            return
+        }
+        Write-Info "Sending test ping via paqet..."
+        try {
+            & $PaqetExe ping -c $ConfigFile
+        } catch {
+            Write-Err "Ping failed: $_"
+        }
+    } else {
+        if (-not (Test-Path "$GfkDir\parameters.py")) {
+            Write-Err "GFK config not found. Configure first (option 3)."
+            return
+        }
+        $serverIP = ""
+        Get-Content "$GfkDir\parameters.py" -ErrorAction SilentlyContinue | ForEach-Object {
+            if ($_ -match 'REMOTE_HOST\s*=\s*.+?([0-9a-zA-Z\.\-]+)') {
+                $serverIP = $Matches[1]
+            }
+        }
+        if (-not $serverIP) {
+            Write-Err "Could not read server IP from parameters.py"
+            return
+        }
+        Write-Info "Testing basic TCP reachability to GFK server ($serverIP:443)..."
+        try {
+            $tcp = Test-NetConnection -ComputerName $serverIP -Port 443 -WarningAction SilentlyContinue
+            if ($tcp.TcpTestSucceeded) {
+                Write-Success "TCP connection to $serverIP:443 succeeded!"
+            } else {
+                Write-Err "TCP connection to $serverIP:443 failed. Server or port may be blocked/offline."
+            }
+        } catch {
+            Write-Err "Connection test failed: $_"
+        }
+    }
+    Write-Host ""
+}
+
+function Test-ProxyRouting {
+    Write-Host ""
+    Write-Host "===============================================" -ForegroundColor Cyan
+    Write-Host "  DNS LEAK & PROXY ROUTING VERIFICATION" -ForegroundColor Cyan
+    Write-Host "===============================================" -ForegroundColor Cyan
+    Write-Host ""
+    $backend = Get-InstalledBackend
+    $socksPort = if ($backend -eq "gfk") { "14000" } else { "1080" }
+    
+    Write-Info "1. Checking Direct Public IP (ISP)..."
+    try {
+        $directIP = (Invoke-RestMethod -Uri "https://api.ipify.org" -TimeoutSec 5 -ErrorAction Stop)
+        Write-Host "   Direct IP: " -NoNewline; Write-Host "$directIP" -ForegroundColor Yellow
+    } catch {
+        Write-Err "Could not fetch direct IP: $_"
+        $directIP = "failed"
+    }
+    Write-Host ""
+    
+    Write-Info "2. Checking Proxy Tunnel IP (via SOCKS5 127.0.0.1:$socksPort)..."
+    if (Get-Command curl.exe -ErrorAction SilentlyContinue) {
+        try {
+            $proxyIP = (& curl.exe -s --max-time 8 --socks5-hostname "127.0.0.1:$socksPort" "https://api.ipify.org")
+            if (-not $proxyIP) {
+                Write-Err "Proxy tunnel did not respond on port $socksPort. Is the client running?"
+            } elseif ($proxyIP -eq $directIP -and $directIP -ne "failed") {
+                Write-Host "   Proxy IP: " -NoNewline; Write-Host "$proxyIP" -ForegroundColor Yellow
+                Write-Warn "Proxy IP matches direct IP! Check if proxy is connected."
+            } else {
+                Write-Host "   Proxy IP: " -NoNewline; Write-Host "$proxyIP" -ForegroundColor Green
+                Write-Success "Proxy routing verified! Traffic is tunneling properly."
+            }
+        } catch {
+            Write-Err "Proxy test failed: $_"
+        }
+        Write-Host ""
+        Write-Info "3. Checking DNS Resolution via Proxy Tunnel..."
+        try {
+            $dnsJson = (& curl.exe -s --max-time 8 --socks5-hostname "127.0.0.1:$socksPort" "https://edns.ip-api.com/json") | ConvertFrom-Json
+            if ($dnsJson.dns.ip) {
+                Write-Host "   DNS Resolver IP: " -NoNewline; Write-Host "$($dnsJson.dns.ip)" -ForegroundColor Green
+                Write-Success "No DNS leaks detected via socks5-hostname resolution!"
+            }
+        } catch {
+            Write-Warn "Could not reach DNS leak test endpoint."
+        }
+    } else {
+        Write-Warn "curl.exe not found on Windows. Cannot test SOCKS5 proxy routing."
+    }
+    Write-Host ""
+}
+
+function Test-ServerSpeed {
+    Write-Host ""
+    Write-Host "===============================================" -ForegroundColor Cyan
+    Write-Host "  SERVER SPEED & BANDWIDTH TEST" -ForegroundColor Cyan
+    Write-Host "===============================================" -ForegroundColor Cyan
+    Write-Host ""
+    $backend = Get-InstalledBackend
+    $socksPort = if ($backend -eq "gfk") { "14000" } else { "1080" }
+    
+    Write-Info "Testing download speed over proxy tunnel (127.0.0.1:$socksPort)..."
+    if (Get-Command curl.exe -ErrorAction SilentlyContinue) {
+        try {
+            & curl.exe -o NUL --progress-bar --socks5-hostname "127.0.0.1:$socksPort" -w "  Download Speed: %{speed_download} bytes/sec (Time: %{time_total}s)\n" "https://speed.cloudflare.com/__down?bytes=25000000"
+        } catch {
+            Write-Err "Speed test failed. Ensure your proxy client is running and connected."
+        }
+    } else {
+        Write-Warn "curl.exe not found. Cannot perform speed test."
+    }
+    Write-Host ""
+}
+
+function Manage-ConfigString {
+    Write-Host ""
+    Write-Host "===============================================" -ForegroundColor Cyan
+    Write-Host "  CONFIG IMPORT / EXPORT STRING" -ForegroundColor Cyan
+    Write-Host "===============================================" -ForegroundColor Cyan
+    Write-Host ""
+    Write-Host "  1. Export current config to string"
+    Write-Host "  2. Import config from string"
+    Write-Host "  b. Back"
+    Write-Host ""
+    $opt = Read-Host "  Select option"
+    if ($opt -eq "1") {
+        $backend = Get-InstalledBackend
+        if ($backend -eq "paqet") {
+            if (-not (Test-Path $ConfigFile)) { Write-Err "Config file not found."; return }
+            $content = Get-Content $ConfigFile -Raw
+            $server = ""; $key = ""
+            if ($content -match 'server:\s*["'']?([^"''\s]+)["'']?') { $server = $Matches[1] }
+            if ($content -match 'key:\s*["'']?([^"''\s]+)["'']?') { $key = $Matches[1] }
+            if (-not $server -or -not $key) { Write-Err "Could not parse server/key from config."; return }
+            $raw = "paqet|$server|$key|1080"
+            $b64 = [Convert]::ToBase64String([System.Text.Encoding]::UTF8.GetBytes($raw))
+            Write-Host "  Shareable Paqet String:" -ForegroundColor White
+            Write-Host "  paqet://$b64" -ForegroundColor Green
+        } elseif ($backend -eq "gfk") {
+            if (-not (Test-Path "$GfkDir\parameters.py")) { Write-Err "GFK config not found."; return }
+            $server = ""; $auth = ""
+            Get-Content "$GfkDir\parameters.py" -ErrorAction SilentlyContinue | ForEach-Object {
+                if ($_ -match 'REMOTE_HOST\s*=\s*.+?([0-9a-zA-Z\.\-]+)') { $server = $Matches[1] }
+                if ($_ -match 'AUTH_CODE\s*=\s*b?["'']([^"'']+)["'']') { $auth = $Matches[1] }
+            }
+            if (-not $server -or -not $auth) { Write-Err "Could not parse server/auth from GFK config."; return }
+            $raw = "gfk|$server|$auth|14000:443|14000"
+            $b64 = [Convert]::ToBase64String([System.Text.Encoding]::UTF8.GetBytes($raw))
+            Write-Host "  Shareable GFK String:" -ForegroundColor White
+            Write-Host "  gfk://$b64" -ForegroundColor Green
+        } else {
+            Write-Warn "No active backend installed."
+        }
+    } elseif ($opt -eq "2") {
+        $str = Read-Host "  Paste config string (paqet://... or gfk://...)"
+        if (-not $str) { return }
+        if ($str -match '^paqet://(.+)$') {
+            $decoded = [System.Text.Encoding]::UTF8.GetString([Convert]::FromBase64String($Matches[1]))
+            $parts = $decoded -split '\|'
+            if ($parts.Length -lt 3 -or $parts[0] -ne "paqet") { Write-Err "Invalid paqet string."; return }
+            $server = $parts[1]; $key = $parts[2]
+            Write-Info "Importing Paqet config ($server)..."
+            if (-not (Test-Path $InstallDir)) { New-Item -ItemType Directory -Path $InstallDir -Force | Out-Null }
+            $cfgContent = @"
+# Auto-generated by paqet-client import
+role: "client"
+server: "$server"
+listen: "127.0.0.1:1080"
+key: "$key"
+log_level: "info"
+"@
+            Set-Content -Path $ConfigFile -Value $cfgContent -Encoding UTF8
+            Write-Success "Paqet config imported! Starting service..."
+            Start-Paqet
+        } elseif ($str -match '^gfk://(.+)$') {
+            $decoded = [System.Text.Encoding]::UTF8.GetString([Convert]::FromBase64String($Matches[1]))
+            $parts = $decoded -split '\|'
+            if ($parts.Length -lt 3 -or $parts[0] -ne "gfk") { Write-Err "Invalid gfk string."; return }
+            $server = $parts[1]; $auth = $parts[2]
+            Write-Info "Importing GFK config ($server)..."
+            if (New-GfkConfig -ServerIP $server -AuthCode $auth -SocksPort "14000" -TcpFlags "") {
+                Write-Success "GFK config imported! Starting service..."
+                Start-Gfk
+            }
+        } else {
+            Write-Err "Unknown protocol prefix."
+        }
+    }
+    Write-Host ""
+}
+
+function Clear-SystemCache {
+    Write-Host ""
+    Write-Host "===============================================" -ForegroundColor Cyan
+    Write-Host "  SYSTEM CLEANUP & CACHE FLUSH" -ForegroundColor Cyan
+    Write-Host "===============================================" -ForegroundColor Cyan
+    Write-Host ""
+    Write-Info "Flushing Windows DNS Resolver Cache..."
+    try {
+        & ipconfig /flushdns | Out-Null
+        Write-Success "DNS cache flushed successfully."
+    } catch {
+        Write-Err "Failed to flush DNS cache: $_"
+    }
+    Write-Info "Cleaning up temporary log files..."
+    if (Test-Path "$InstallDir\*.log") {
+        Remove-Item "$InstallDir\*.log" -Force -ErrorAction SilentlyContinue
+        Write-Success "Old log files removed."
+    }
+    Write-Host ""
+}
+
 #═══════════════════════════════════════════════════════════════════════
 # Interactive Menu
 #═══════════════════════════════════════════════════════════════════════
@@ -968,7 +1198,7 @@ function Show-Menu {
     while ($true) {
         Write-Host ""
         Write-Host "===============================================" -ForegroundColor Cyan
-        Write-Host "  PAQET/GFK CLIENT MANAGER" -ForegroundColor Cyan
+        Write-Host "  PAQET/GFK CLIENT MANAGER (v1.0.1)" -ForegroundColor Cyan
         Write-Host "===============================================" -ForegroundColor Cyan
         Write-Host ""
         if ($backend) {
@@ -989,8 +1219,13 @@ function Show-Menu {
         Write-Host "  4. Start client"
         Write-Host "  5. Stop client"
         Write-Host "  6. Show status"
-        Write-Host "  7. Update paqet"
-        Write-Host "  8. About (how it works)"
+        Write-Host "  7. Test server connection (Ping)"
+        Write-Host "  8. Update paqet"
+        Write-Host "  9. About (how it works)"
+        Write-Host "  10. Test DNS Leak & Proxy Routing"
+        Write-Host "  11. Speed & Bandwidth Test"
+        Write-Host "  12. Export / Import Config String"
+        Write-Host "  13. System Cleanup & Cache Flush"
         Write-Host "  0. Exit"
         Write-Host ""
 
@@ -1070,8 +1305,13 @@ function Show-Menu {
             }
             "5" { Stop-Client }
             "6" { Get-ClientStatus }
-            "7" { Update-Paqet }
-            "8" { Show-About }
+            "7" { Test-ServerConnection }
+            "8" { Update-Paqet }
+            "9" { Show-About }
+            "10" { Test-ProxyRouting }
+            "11" { Test-ServerSpeed }
+            "12" { Manage-ConfigString }
+            "13" { Clear-SystemCache }
             "0" { return }
             default { Write-Warn "Invalid option" }
         }
@@ -1081,7 +1321,7 @@ function Show-Menu {
 function Show-About {
     Write-Host ""
     Write-Host "===============================================" -ForegroundColor Cyan
-    Write-Host "  HOW IT WORKS" -ForegroundColor Cyan
+    Write-Host "  HOW IT WORKS (v1.0.1)" -ForegroundColor Cyan
     Write-Host "===============================================" -ForegroundColor Cyan
     Write-Host ""
     Write-Host "  This tool helps bypass firewall restrictions"

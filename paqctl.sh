@@ -1,7 +1,7 @@
 #!/bin/bash
 #
 # ╔═══════════════════════════════════════════════════════════════════╗
-# ║      PAQCTL - Paqet Manager v1.0.0                                ║
+# ║      PAQCTL - Paqet Manager v1.0.1                                ║
 # ║                                                                   ║
 # ║  One-click setup for Paqet raw-socket proxy                       ║
 # ║                                                                   ║
@@ -29,7 +29,7 @@ if [ -z "$BASH_VERSION" ]; then
     exit 1
 fi
 
-VERSION="1.0.0"
+VERSION="1.0.1"
 
 # Pinned versions for stability (update these after testing new releases)
 PAQET_VERSION_PINNED="v1.0.0-alpha.20"
@@ -2226,7 +2226,7 @@ create_management_script() {
 # https://github.com/SamNet-dev/paqctl
 #
 
-VERSION="1.0.0"
+VERSION="1.0.1"
 
 # Pinned versions for stability (update these after testing new releases)
 PAQET_VERSION_PINNED="v1.0.0-alpha.20"
@@ -5023,6 +5023,344 @@ restore_config() {
 }
 
 #═══════════════════════════════════════════════════════════════════════
+# Diagnostics, Monitoring, Security & Maintenance
+#═══════════════════════════════════════════════════════════════════════
+
+show_active_clients() {
+    echo ""
+    echo -e "${CYAN}═══════════════════════════════════════════════════════════════${NC}"
+    echo -e "${BOLD}  ACTIVE CLIENTS & CONNECTION MONITOR${NC}"
+    echo -e "${CYAN}═══════════════════════════════════════════════════════════════${NC}"
+    echo ""
+    _load_settings
+    local port="${LISTEN_PORT:-8443}"
+    [ "$BACKEND" = "gfw-knocker" ] && port="${GFK_QUIC_PORT:-25000}"
+    echo -e "  ${BOLD}Listening Port:${NC} $port | ${BOLD}Role:${NC} ${ROLE:-unknown}"
+    echo ""
+    if command -v ss &>/dev/null; then
+        echo -e "  ${YELLOW}Active Connections (ss):${NC}"
+        ss -tu state established "( sport = :$port or dport = :$port )" 2>/dev/null | head -30 || true
+        local count=$(ss -tu state established "( sport = :$port or dport = :$port )" 2>/dev/null | grep -v "Netid" | wc -l 2>/dev/null || echo "0")
+        echo ""
+        echo -e "  ${GREEN}Total Established Tunnel Connections:${NC} ${BOLD}$count${NC}"
+    elif command -v netstat &>/dev/null; then
+        echo -e "  ${YELLOW}Active Connections (netstat):${NC}"
+        netstat -tun 2>/dev/null | grep ":$port " | head -30 || true
+        local count=$(netstat -tun 2>/dev/null | grep ":$port " | grep "ESTABLISHED" | wc -l 2>/dev/null || echo "0")
+        echo ""
+        echo -e "  ${GREEN}Total Established Tunnel Connections:${NC} ${BOLD}$count${NC}"
+    else
+        log_warn "Neither 'ss' nor 'netstat' found on this system."
+    fi
+    echo ""
+    if [ "$ROLE" = "server" ] && command -v ss &>/dev/null; then
+        echo -e "  ${YELLOW}Unique Client IP Addresses:${NC}"
+        ss -tn state established "( sport = :$port )" 2>/dev/null | awk '{print $5}' | cut -d: -f1 | grep -v "Address" | grep -v "^$" | sort -u | head -20 || true
+        echo ""
+    fi
+}
+
+run_speedtest() {
+    echo ""
+    echo -e "${CYAN}═══════════════════════════════════════════════════════════════${NC}"
+    echo -e "${BOLD}  SERVER SPEED & BANDWIDTH TEST${NC}"
+    echo -e "${CYAN}═══════════════════════════════════════════════════════════════${NC}"
+    echo ""
+    if command -v speedtest-cli &>/dev/null; then
+        log_info "Running speedtest-cli..."
+        speedtest-cli --simple 2>/dev/null || speedtest-cli 2>/dev/null || log_warn "speedtest-cli encountered an error."
+    elif command -v speedtest &>/dev/null; then
+        log_info "Running Ookla speedtest..."
+        speedtest 2>/dev/null || log_warn "Ookla speedtest encountered an error."
+    else
+        log_info "Testing download speed using Cloudflare benchmark..."
+        if command -v curl &>/dev/null; then
+            curl -o /dev/null --progress-bar -w "  Download Speed: %{speed_download} bytes/sec (Time: %{time_total}s)\n" https://speed.cloudflare.com/__down?bytes=50000000 2>/dev/null || \
+            curl -o /dev/null --progress-bar https://speed.cloudflare.com/__down?bytes=25000000 2>/dev/null || \
+            log_warn "Speedtest failed. You can install speedtest-cli for detailed metrics: sudo apt install speedtest-cli"
+        else
+            log_warn "curl not found. Cannot perform speed test."
+        fi
+    fi
+    echo ""
+}
+
+check_proxy_routing() {
+    echo ""
+    echo -e "${CYAN}═══════════════════════════════════════════════════════════════${NC}"
+    echo -e "${BOLD}  DNS LEAK & PROXY ROUTING VERIFICATION${NC}"
+    echo -e "${CYAN}═══════════════════════════════════════════════════════════════${NC}"
+    echo ""
+    _load_settings
+    local socks_port="${SOCKS_PORT:-1080}"
+    [ "$BACKEND" = "gfw-knocker" ] && socks_port="${GFK_SOCKS_VIO_PORT:-14000}"
+    
+    echo -e "  ${BOLD}1. Checking Direct Public IP (ISP):${NC}"
+    local direct_ip=$(curl -s --max-time 5 https://api.ipify.org 2>/dev/null || echo "failed")
+    echo -e "     Direct IP: ${YELLOW}${direct_ip}${NC}"
+    echo ""
+    
+    echo -e "  ${BOLD}2. Checking Proxy Tunnel IP (via SOCKS5 127.0.0.1:$socks_port):${NC}"
+    if command -v curl &>/dev/null; then
+        local proxy_ip=$(curl -s --max-time 8 --socks5-hostname "127.0.0.1:$socks_port" https://api.ipify.org 2>/dev/null || echo "failed/unreachable")
+        if [ "$proxy_ip" = "failed/unreachable" ]; then
+            echo -e "     Proxy IP:  ${RED}${proxy_ip}${NC}"
+            log_warn "Proxy tunnel is not responding on port $socks_port. Is the client running?"
+        elif [ "$proxy_ip" = "$direct_ip" ] && [ "$direct_ip" != "failed" ]; then
+            echo -e "     Proxy IP:  ${YELLOW}${proxy_ip}${NC}"
+            log_warn "Proxy IP matches direct IP! Notice: If you are running this on the server itself, this is normal."
+        else
+            echo -e "     Proxy IP:  ${GREEN}${proxy_ip}${NC}"
+            log_success "Proxy routing verified! Traffic is tunneling properly."
+        fi
+    else
+        log_warn "curl not found."
+    fi
+    echo ""
+    echo -e "  ${BOLD}3. Checking DNS Resolution via Proxy:${NC}"
+    local dns_check=$(curl -s --max-time 8 --socks5-hostname "127.0.0.1:$socks_port" https://edns.ip-api.com/json 2>/dev/null || echo "")
+    if [ -n "$dns_check" ]; then
+        local dns_ip=$(echo "$dns_check" | grep -o '"dns":{"ip":"[^"]*' 2>/dev/null | cut -d'"' -f5 2>/dev/null || echo "resolved")
+        echo -e "     DNS Resolver IP via tunnel: ${GREEN}${dns_ip:-resolved}${NC}"
+        log_success "No DNS leaks detected via socks5-hostname resolution!"
+    else
+        echo -e "     ${DIM}DNS leak check endpoint unreachable or timed out.${NC}"
+    fi
+    echo ""
+}
+
+manage_ip_ban() {
+    local action="$1"
+    local target_ip="$2"
+    
+    if [ -z "$action" ]; then
+        echo ""
+        echo -e "${CYAN}═══════════════════════════════════════════════════════════════${NC}"
+        echo -e "${BOLD}  IP BAN & ALLOWLIST MANAGER${NC}"
+        echo -e "${CYAN}═══════════════════════════════════════════════════════════════${NC}"
+        echo ""
+        echo "  1. Ban an IP address (Drop traffic)"
+        echo "  2. Unban an IP address"
+        echo "  3. List currently banned IPs"
+        echo "  b. Back"
+        echo ""
+        read -p "  Choice: " ban_choice < /dev/tty || return
+        case "$ban_choice" in
+            1)
+                read -p "  Enter IP address to ban: " target_ip < /dev/tty
+                [ -z "$target_ip" ] && return
+                action="ban"
+                ;;
+            2)
+                read -p "  Enter IP address to unban: " target_ip < /dev/tty
+                [ -z "$target_ip" ] && return
+                action="unban"
+                ;;
+            3)
+                action="list"
+                ;;
+            *) return ;;
+        esac
+    fi
+
+    if [ "$action" = "list" ]; then
+        echo ""
+        echo -e "  ${YELLOW}Currently blocked IPs (iptables / firewalld):${NC}"
+        if _is_firewalld_active; then
+            firewall-cmd --direct --get-all-rules 2>/dev/null | grep -i "DROP\|REJECT" || echo "  No direct DROP rules found in firewalld."
+        elif command -v iptables &>/dev/null; then
+            iptables -L INPUT -v -n 2>/dev/null | grep -i "DROP\|REJECT" || echo "  No DROP rules found in iptables INPUT chain."
+        fi
+        echo ""
+        return
+    fi
+
+    if [[ ! "$target_ip" =~ ^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+        log_error "Invalid IPv4 address format: $target_ip"
+        return 1
+    fi
+
+    if [ "$action" = "ban" ]; then
+        log_info "Banning IP $target_ip..."
+        if _is_firewalld_active; then
+            firewall-cmd --direct --add-rule ipv4 filter INPUT 0 -s "$target_ip" -j DROP 2>/dev/null || true
+        elif command -v iptables &>/dev/null; then
+            iptables -I INPUT -s "$target_ip" -j DROP 2>/dev/null || true
+        fi
+        log_success "IP $target_ip has been banned (DROP)."
+    elif [ "$action" = "unban" ]; then
+        log_info "Unbanning IP $target_ip..."
+        if _is_firewalld_active; then
+            firewall-cmd --direct --remove-rule ipv4 filter INPUT 0 -s "$target_ip" -j DROP 2>/dev/null || true
+        elif command -v iptables &>/dev/null; then
+            iptables -D INPUT -s "$target_ip" -j DROP 2>/dev/null || true
+        fi
+        log_success "IP $target_ip has been unbanned."
+    fi
+}
+
+rotate_key() {
+    echo ""
+    echo -e "${CYAN}═══════════════════════════════════════════════════════════════${NC}"
+    echo -e "${BOLD}  ONE-CLICK ENCRYPTION KEY / AUTH CODE ROTATION${NC}"
+    echo -e "${CYAN}═══════════════════════════════════════════════════════════════${NC}"
+    echo ""
+    _load_settings
+    if [ "$ROLE" != "server" ]; then
+        log_warn "Key rotation is typically performed on the server. On clients, use 'Change configuration' or 'Config Import'."
+        return 1
+    fi
+    echo -e "  ${YELLOW}⚠️ WARNING: Rotating the encryption key / auth code will disconnect${NC}"
+    echo -e "  ${YELLOW}   all currently connected clients until they update their key!${NC}"
+    echo ""
+    read -p "  Are you sure you want to rotate credentials? [y/N]: " confirm < /dev/tty || return
+    [[ ! "$confirm" =~ ^[yY]$ ]] && { log_info "Rotation cancelled."; return; }
+
+    if [ "$BACKEND" = "gfw-knocker" ]; then
+        local new_code=$(openssl rand -hex 8 2>/dev/null || echo "gfk$(date +%s)")
+        log_info "Generating new GFK Auth Code: $new_code"
+        _safe_update_setting "GFK_AUTH_CODE" "$new_code" "$INSTALL_DIR/settings.conf"
+        export GFK_AUTH_CODE="$new_code"
+        stop_gfk_backend
+        start_gfk_backend
+        log_success "GFK Auth Code rotated successfully!"
+        echo -e "  ${GREEN}${BOLD}New Auth Code: ${new_code}${NC}"
+    else
+        local new_key=$("$INSTALL_DIR/bin/paqet" secret 2>/dev/null || openssl rand -base64 32 2>/dev/null | tr -d '=+/' | head -c 32)
+        log_info "Generating new Paqet Encryption Key: $new_key"
+        _safe_update_setting "ENCRYPTION_KEY" "$new_key" "$INSTALL_DIR/settings.conf"
+        export ENCRYPTION_KEY="$new_key"
+        if [ -f "$INSTALL_DIR/config.yaml" ]; then
+            sed -i "s/^key:.*/key: \"$new_key\"/" "$INSTALL_DIR/config.yaml" 2>/dev/null || true
+        fi
+        stop_paqet_backend || true
+        start_paqet_backend || true
+        log_success "Paqet Encryption Key rotated successfully!"
+        echo -e "  ${GREEN}${BOLD}New Encryption Key: ${new_key}${NC}"
+    fi
+    echo ""
+}
+
+system_cleanup() {
+    echo ""
+    echo -e "${CYAN}═══════════════════════════════════════════════════════════════${NC}"
+    echo -e "${BOLD}  SYSTEM MAINTENANCE & CLEANUP${NC}"
+    echo -e "${CYAN}═══════════════════════════════════════════════════════════════${NC}"
+    echo ""
+    log_info "Cleaning up archived logs and temporary system files..."
+    if command -v journalctl &>/dev/null; then
+        journalctl --vacuum-time=7d 2>/dev/null || true
+        log_success "Systemd journal logs older than 7 days vacuumed."
+    fi
+    if [ -d "/var/log" ]; then
+        rm -f /var/log/paqctl*.gz /var/log/paqctl*.old 2>/dev/null || true
+        log_success "Old compressed log archives removed."
+    fi
+    rm -f /tmp/paqctl* /tmp/.tg_curl* 2>/dev/null || true
+    log_success "Temporary cache and socket files cleaned."
+    
+    if command -v sync &>/dev/null; then
+        sync && echo 3 > /proc/sys/vm/drop_caches 2>/dev/null || true
+        log_success "PageCache, dentries, and inodes freed."
+    fi
+    echo ""
+    log_success "System cleanup completed!"
+    echo ""
+}
+
+export_config_string() {
+    echo ""
+    echo -e "${CYAN}═══════════════════════════════════════════════════════════════${NC}"
+    echo -e "${BOLD}  CONFIG EXPORT / STRING SHARING${NC}"
+    echo -e "${CYAN}═══════════════════════════════════════════════════════════════${NC}"
+    echo ""
+    _load_settings
+    local _ip="${REMOTE_SERVER:-${LOCAL_IP:-$(curl -s --max-time 3 https://api.ipify.org 2>/dev/null || hostname -I 2>/dev/null | awk '{print $1}' || echo 'unknown')}}"
+    if [ "$BACKEND" = "gfw-knocker" ]; then
+        local raw_str="gfk|${GFK_SERVER_IP:-$_ip}|${GFK_AUTH_CODE}|${GFK_PORT_MAPPINGS:-14000:443}|${GFK_SOCKS_VIO_PORT:-14000}"
+        local b64=$(echo -n "$raw_str" | base64 | tr -d '\r\n')
+        echo -e "  ${BOLD}Shareable GFK Client String:${NC}"
+        echo -e "  ${GREEN}gfk://${b64}${NC}"
+    else
+        local port="${LISTEN_PORT:-8443}"
+        local key="${ENCRYPTION_KEY}"
+        if [ -z "$key" ] && [ -f "$INSTALL_DIR/config.yaml" ]; then
+            key=$(grep -E "^key:" "$INSTALL_DIR/config.yaml" 2>/dev/null | awk '{print $2}' | tr -d '"' || echo "")
+        fi
+        local raw_str="paqet|${_ip}|${port}|${key}|${SOCKS_PORT:-1080}"
+        local b64=$(echo -n "$raw_str" | base64 | tr -d '\r\n')
+        echo -e "  ${BOLD}Shareable Paqet Client String:${NC}"
+        echo -e "  ${GREEN}paqet://${b64}${NC}"
+    fi
+    echo ""
+    echo -e "  ${DIM}You can copy this string and use 'Import Config' on client devices.${NC}"
+    echo ""
+}
+
+import_config_string() {
+    echo ""
+    echo -e "${CYAN}═══════════════════════════════════════════════════════════════${NC}"
+    echo -e "${BOLD}  CONFIG IMPORT FROM STRING${NC}"
+    echo -e "${CYAN}═══════════════════════════════════════════════════════════════${NC}"
+    echo ""
+    read -p "  Paste config string (paqet://... or gfk://...): " input_str < /dev/tty || return
+    [ -z "$input_str" ] && return
+    
+    local proto="${input_str%%://*}"
+    local b64="${input_str#*://}"
+    local decoded=$(echo "$b64" | base64 -d 2>/dev/null || echo "")
+    
+    if [ -z "$decoded" ]; then
+        log_error "Invalid or corrupted base64 config string."
+        return 1
+    fi
+    
+    if [ "$proto" = "paqet" ]; then
+        IFS='|' read -r _p _ip _port _key _socks <<< "$decoded"
+        if [ "$_p" != "paqet" ] || [ -z "$_ip" ] || [ -z "$_port" ] || [ -z "$_key" ]; then
+            log_error "Invalid paqet string format."
+            return 1
+        fi
+        log_info "Importing Paqet Client Config (Server: $_ip:$_port)..."
+        _safe_update_setting "REMOTE_SERVER" "$_ip" "$INSTALL_DIR/settings.conf"
+        _safe_update_setting "LISTEN_PORT" "$_port" "$INSTALL_DIR/settings.conf"
+        _safe_update_setting "ENCRYPTION_KEY" "$_key" "$INSTALL_DIR/settings.conf"
+        [ -n "$_socks" ] && _safe_update_setting "SOCKS_PORT" "$_socks" "$INSTALL_DIR/settings.conf"
+        if [ ! -f "$INSTALL_DIR/config.yaml" ]; then
+            cat > "$INSTALL_DIR/config.yaml" << EOF
+role: "client"
+server: "$_ip:$_port"
+listen: "127.0.0.1:1080"
+key: "$_key"
+log_level: "info"
+EOF
+        else
+            sed -i "s/^server:.*/server: \"$_ip:$_port\"/" "$INSTALL_DIR/config.yaml" 2>/dev/null || true
+            sed -i "s/^key:.*/key: \"$_key\"/" "$INSTALL_DIR/config.yaml" 2>/dev/null || true
+        fi
+        log_success "Paqet client configuration imported! Restarting service..."
+        stop_paqet_backend || true; start_paqet_backend || true
+    elif [ "$proto" = "gfk" ]; then
+        IFS='|' read -r _p _ip _auth _map _socks <<< "$decoded"
+        if [ "$_p" != "gfk" ] || [ -z "$_ip" ] || [ -z "$_auth" ]; then
+            log_error "Invalid gfk string format."
+            return 1
+        fi
+        log_info "Importing GFK Client Config (Server: $_ip)..."
+        _safe_update_setting "GFK_SERVER_IP" "$_ip" "$INSTALL_DIR/settings.conf"
+        _safe_update_setting "GFK_AUTH_CODE" "$_auth" "$INSTALL_DIR/settings.conf"
+        [ -n "$_map" ] && _safe_update_setting "GFK_PORT_MAPPINGS" "$_map" "$INSTALL_DIR/settings.conf"
+        [ -n "$_socks" ] && _safe_update_setting "GFK_SOCKS_VIO_PORT" "$_socks" "$INSTALL_DIR/settings.conf"
+        log_success "GFK client configuration imported! Restarting service..."
+        stop_gfk_backend || true; start_gfk_backend || true
+    else
+        log_error "Unknown protocol prefix: $proto (expected paqet:// or gfk://)"
+        return 1
+    fi
+    echo ""
+}
+
+#═══════════════════════════════════════════════════════════════════════
 # Telegram Integration
 #═══════════════════════════════════════════════════════════════════════
 
@@ -5420,6 +5758,24 @@ except: pass
                 /stop)    /usr/local/bin/paqctl stop 2>&1; send_message "⏹ Service stopped" ;;
                 /start)   /usr/local/bin/paqctl start 2>&1; send_message "▶️ Service started" ;;
                 /version) send_message "📦 Version: ${PAQET_VERSION:-unknown} | paqctl: ${PAQCTL_VERSION:-unknown}" ;;
+                /config|/info)
+                    local _ip="${REMOTE_SERVER:-${LOCAL_IP:-$(curl -s --max-time 3 https://api.ipify.org 2>/dev/null || echo 'unknown')}}"
+                    local _cfg="⚙️ *Connection Configuration*"$'\n\n'
+                    if [ "$BACKEND" = "gfw-knocker" ]; then
+                        _cfg+="🔹 *Backend:* GFW-knocker"$'\n'
+                        _cfg+="🌐 *Server IP:* \`${GFK_SERVER_IP:-$_ip}\`"$'\n'
+                        _cfg+="🔑 *Auth Code:* \`${GFK_AUTH_CODE:-not set}\`"$'\n'
+                        _cfg+="🔌 *Port Mappings:* \`${GFK_PORT_MAPPINGS:-14000:443}\`"$'\n'
+                        _cfg+="🧦 *Client SOCKS5:* \`127.0.0.1:${GFK_SOCKS_VIO_PORT:-14000}\`"
+                    else
+                        _cfg+="🔹 *Backend:* Paqet"$'\n'
+                        _cfg+="🌐 *Server IP:* \`$_ip\`"$'\n'
+                        _cfg+="🔌 *Port:* \`${LISTEN_PORT:-8443}\`"$'\n'
+                        _cfg+="🔑 *Key:* \`${ENCRYPTION_KEY:-not set}\`"$'\n'
+                        _cfg+="🧦 *Client SOCKS5:* \`127.0.0.1:${SOCKS_PORT:-1080}\`"
+                    fi
+                    send_message "$_cfg"
+                    ;;
             esac
         done <<< "$cmds"
     fi
@@ -6610,6 +6966,14 @@ show_settings_menu() {
             echo "  9. Rollback to previous version"
             echo "  p. Ping test (connectivity)"
             echo "  d. Packet dump (diagnostics)"
+            echo "  c. Active Client Monitor (top)"
+            echo "  t. Speed & Bandwidth Test"
+            echo "  r. DNS Leak & Routing Check"
+            echo "  f. IP Ban & Allowlist Manager"
+            echo "  k. Rotate Encryption Key / Auth Code"
+            echo "  l. System Cleanup & Cache Flush"
+            echo "  e. Export Config String"
+            echo "  m. Import Config String"
             echo "  a. Install additional backend"
             echo "  s. Switch backend (current: ${BACKEND})"
             echo "  u. Uninstall"
@@ -6632,6 +6996,14 @@ show_settings_menu() {
             9) rollback_paqet; read -n 1 -s -r -p "  Press any key..." < /dev/tty || true; redraw=true ;;
             p|P) run_ping; read -n 1 -s -r -p "  Press any key..." < /dev/tty || true; redraw=true ;;
             d|D) run_dump; read -n 1 -s -r -p "  Press any key..." < /dev/tty || true; redraw=true ;;
+            c|C) show_active_clients; read -n 1 -s -r -p "  Press any key..." < /dev/tty || true; redraw=true ;;
+            t|T) run_speedtest; read -n 1 -s -r -p "  Press any key..." < /dev/tty || true; redraw=true ;;
+            r|R) check_proxy_routing; read -n 1 -s -r -p "  Press any key..." < /dev/tty || true; redraw=true ;;
+            f|F) manage_ip_ban; redraw=true ;;
+            k|K) rotate_key; read -n 1 -s -r -p "  Press any key..." < /dev/tty || true; redraw=true ;;
+            l|L) system_cleanup; read -n 1 -s -r -p "  Press any key..." < /dev/tty || true; redraw=true ;;
+            e|E) export_config_string; read -n 1 -s -r -p "  Press any key..." < /dev/tty || true; redraw=true ;;
+            m|M) import_config_string; read -n 1 -s -r -p "  Press any key..." < /dev/tty || true; redraw=true ;;
             a|A) install_additional_backend; redraw=true ;;
             s|S) switch_backend; redraw=true ;;
             u|U) uninstall_paqctl; exit 0 ;;
@@ -7020,8 +7392,16 @@ show_menu() {
             print_header
 
             # Status line showing both backends
+            local boot_badge=""
+            if command -v systemctl &>/dev/null && [ -d /run/systemd/system ]; then
+                if systemctl is-enabled paqctl.service &>/dev/null; then
+                    boot_badge="  |  Boot: ${GREEN}enabled${NC}"
+                else
+                    boot_badge="  |  Boot: ${YELLOW}disabled${NC}"
+                fi
+            fi
             echo -e "${CYAN}─────────────────────────────────────────────────────────────────${NC}"
-            echo -e "  ${BOLD}BACKEND STATUS${NC}  (Role: ${ROLE})"
+            echo -e "  ${BOLD}BACKEND STATUS${NC}  (Role: ${ROLE})${boot_badge}"
             echo -e "${CYAN}─────────────────────────────────────────────────────────────────${NC}"
 
             # Paqet status
@@ -7100,6 +7480,8 @@ show_menu() {
             fi
 
             echo ""
+            echo "  r. Quick Restart Service"
+            echo "  b. Toggle Auto-start on Boot"
             echo "  8. Settings & Tools"
             echo -e "  ${YELLOW}c. Connection Info${NC}"
             echo "  i. Info & Help"
@@ -7179,6 +7561,20 @@ show_menu() {
                 fi
                 redraw=true
                 ;;
+            r|R) restart_paqet; read -n 1 -s -r -p "  Press any key to return..." < /dev/tty || true; redraw=true ;;
+            b|B)
+                if command -v systemctl &>/dev/null && [ -d /run/systemd/system ]; then
+                    if systemctl is-enabled paqctl.service &>/dev/null; then
+                        systemctl disable paqctl.service 2>/dev/null || true
+                        log_info "Auto-start on boot DISABLED"
+                    else
+                        systemctl enable paqctl.service 2>/dev/null || true
+                        log_success "Auto-start on boot ENABLED"
+                    fi
+                else
+                    log_warn "Systemd not detected or supported for toggle."
+                fi
+                read -n 1 -s -r -p "  Press any key to return..." < /dev/tty || true; redraw=true ;;
             8) show_settings_menu; redraw=true ;;
             c|C) show_connection_info; redraw=true ;;
             i|I) show_info_menu; redraw=true ;;
@@ -7216,6 +7612,19 @@ case "${1:-menu}" in
     dump)             run_dump ;;
     backup)           backup_config ;;
     restore)          restore_config ;;
+    top|monitor|clients) show_active_clients ;;
+    speed|speedtest)  run_speedtest ;;
+    dns|routing|check-dns) check_proxy_routing ;;
+    ban|unban)        manage_ip_ban "$1" "$2" ;;
+    rotate|rotate-key) rotate_key ;;
+    clean|cleanup)    system_cleanup ;;
+    export|share)     export_config_string ;;
+    import)           import_config_string ;;
+    info|details|client) show_connection_info ;;
+    enable|boot-enable)
+        if command -v systemctl &>/dev/null; then systemctl enable paqctl.service && log_success "Auto-start enabled"; fi ;;
+    disable|boot-disable)
+        if command -v systemctl &>/dev/null; then systemctl disable paqctl.service && log_success "Auto-start disabled"; fi ;;
     telegram)         show_telegram_menu ;;
     uninstall)        uninstall_paqctl ;;
     version)          show_version ;;
