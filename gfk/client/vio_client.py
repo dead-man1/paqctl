@@ -40,7 +40,12 @@ async def async_sniff_realtime(qu1):
             # Check flags using 'in' to handle different flag orderings (AP vs PA)
             flags = str(packet[TCP].flags) if packet.haslayer(TCP) else ''
             if packet.haslayer(TCP) and packet[IP].src == vps_ip and packet[TCP].sport == vio_tcp_server_port and 'A' in flags and 'P' in flags:
-                data1 = packet[TCP].load
+                if packet.haslayer(Raw):
+                    data1 = bytes(packet[Raw].load)
+                elif hasattr(packet[TCP], 'load'):
+                    data1 = bytes(packet[TCP].load)
+                else:
+                    return
                 qu1.put_nowait(data1)
 
         async def start_sniffer():

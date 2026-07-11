@@ -1,7 +1,7 @@
 #Requires -RunAsAdministrator
 <#
 .SYNOPSIS
-    Paqet/GFK Windows Client v1.0.1 - Bypass Firewall Restrictions
+    Paqet/GFK Windows Client v1.1.0 - Bypass Firewall Restrictions
 
 .DESCRIPTION
     This script helps you connect to your server through firewalls that block normal connections.
@@ -41,13 +41,14 @@ param(
     [string]$ServerAddr,
     [string]$Key,
     [string]$Action = "menu",  # menu, run, install, config, stop, status
-    [string]$Backend = ""      # paqet, gfk (auto-detect if not specified)
+    [string]$Backend = "",     # paqet, gfk (auto-detect if not specified)
+    [switch]$WatchdogCheck
 )
 
 $ErrorActionPreference = "Stop"
 
 # Directories and pinned versions (for stability - update after testing new releases)
-$ClientVersion = "v1.0.1"
+$ClientVersion = "v1.1.0"
 $InstallDir = "C:\paqet"
 $PaqetExe = "$InstallDir\paqet_windows_amd64.exe"
 $PaqetVersionPinned = "v1.0.0-alpha.20"   # Fallback if GitHub API unreachable
@@ -288,8 +289,31 @@ function Get-InstalledBackend {
     return $null
 }
 
+function Get-Setting {
+    param([string]$Key, [string]$DefaultValue = "")
+    if (Test-Path $SettingsFile) {
+        $content = Get-Content $SettingsFile -ErrorAction SilentlyContinue
+        foreach ($line in $content) {
+            if ($line -match "^$Key=`"?(.*?)`"?$") {
+                return $Matches[1]
+            }
+        }
+    }
+    return $DefaultValue
+}
+
 function Save-Settings {
-    param([string]$Backend, [string]$ServerAddr = "", [string]$SocksPort = "1080")
+    param(
+        [string]$Backend,
+        [string]$ServerAddr = "",
+        [string]$SocksPort = "1080",
+        [string]$RoutingMode = "",
+        [string]$ForwardPort = "",
+        [string]$ForwardTarget = "",
+        [string]$KcpProfile = "",
+        [string]$TurboEnabled = "",
+        [string]$WatchdogEnabled = ""
+    )
 
     $existing = @{}
     if (Test-Path $SettingsFile) {
@@ -300,9 +324,15 @@ function Save-Settings {
         }
     }
 
-    $existing["BACKEND"] = $Backend
+    if ($Backend) { $existing["BACKEND"] = $Backend }
     if ($ServerAddr) { $existing["SERVER_ADDR"] = $ServerAddr }
     if ($SocksPort) { $existing["SOCKS_PORT"] = $SocksPort }
+    if ($RoutingMode) { $existing["ROUTING_MODE"] = $RoutingMode }
+    if ($ForwardPort) { $existing["FORWARD_PORT"] = $ForwardPort }
+    if ($ForwardTarget) { $existing["FORWARD_TARGET"] = $ForwardTarget }
+    if ($KcpProfile) { $existing["KCP_PROFILE"] = $KcpProfile }
+    if ($TurboEnabled) { $existing["TURBO_ENABLED"] = $TurboEnabled }
+    if ($WatchdogEnabled) { $existing["WATCHDOG_ENABLED"] = $WatchdogEnabled }
 
     if (-not (Test-Path $InstallDir)) {
         New-Item -ItemType Directory -Path $InstallDir -Force | Out-Null
@@ -379,7 +409,22 @@ function New-PaqetConfig {
         [Parameter(Mandatory)][string]$Server,
         [Parameter(Mandatory)][string]$SecretKey,
         [string]$TcpLocalFlag = "PA",
-        [string]$TcpRemoteFlag = "PA"
+        [string]$TcpRemoteFlag = "PA",
+        [string]$RoutingMode = "socks5",
+        [string]$SocksPort = "1080",
+        [string]$ForwardPort = "14000",
+        [string]$ForwardTarget = "127.0.0.1:80",
+        [string]$KcpProfile = "standard",
+        [int]$KcpConn = 2,
+        [int]$KcpMtu = 1350,
+        [int]$KcpSndWnd = 1024,
+        [int]$KcpRcvWnd = 1024,
+        [int]$KcpNoDelay = 0,
+        [int]$KcpInterval = 20,
+        [int]$KcpResend = 2,
+        [int]$KcpNoCongestion = 0,
+        [int]$KcpSockBuf = 4194304,
+        [int]$KcpSmuxBuf = 4194304
     )
 
     # Validate TCP flags (uppercase letters F,S,R,P,A,U,E,C, optionally comma-separated)
@@ -390,6 +435,21 @@ function New-PaqetConfig {
     if ($TcpRemoteFlag -cnotmatch '^[FSRPAUEC]+(,[FSRPAUEC]+)*$') {
         Write-Warn "Invalid TCP remote flag. Using default: PA"
         $TcpRemoteFlag = "PA"
+    }
+
+    switch ($KcpProfile.ToLower()) {
+        "highloss" {
+            $KcpConn = 4; $KcpMtu = 1300; $KcpSndWnd = 1024; $KcpRcvWnd = 1024
+            $KcpNoDelay = 0; $KcpInterval = 20; $KcpResend = 2; $KcpNoCongestion = 0; $KcpSockBuf = 4194304; $KcpSmuxBuf = 4194304
+        }
+        "cdntunnel" {
+            $KcpConn = 8; $KcpMtu = 1400; $KcpSndWnd = 2048; $KcpRcvWnd = 2048
+            $KcpNoDelay = 0; $KcpInterval = 20; $KcpResend = 2; $KcpNoCongestion = 0; $KcpSockBuf = 8388608; $KcpSmuxBuf = 8388608
+        }
+        "gaming" {
+            $KcpConn = 2; $KcpMtu = 1200; $KcpSndWnd = 512; $KcpRcvWnd = 512
+            $KcpNoDelay = 1; $KcpInterval = 10; $KcpResend = 2; $KcpNoCongestion = 1; $KcpSockBuf = 4194304; $KcpSmuxBuf = 4194304
+        }
     }
 
     Write-Info "Detecting network..."
@@ -411,14 +471,28 @@ function New-PaqetConfig {
     $remoteFlagYaml = "[" + ($remoteFlagArray -join ", ") + "]"
 
     $guidEscaped = "\\Device\\NPF_$($net.Guid)"
+
+    $routingSection = ""
+    if ($RoutingMode -eq "forward") {
+        $routingSection = @"
+forward:
+  - listen: "0.0.0.0:$ForwardPort"
+    target: "$ForwardTarget"
+"@
+    } else {
+        $routingSection = @"
+socks5:
+  - listen: "127.0.0.1:$SocksPort"
+"@
+    }
+
     $config = @"
 role: "client"
 
 log:
   level: "info"
 
-socks5:
-  - listen: "127.0.0.1:1080"
+$routingSection
 
 network:
   interface: "$($net.Name)"
@@ -438,6 +512,16 @@ transport:
   kcp:
     mode: "fast"
     key: "$SecretKey"
+    conn: $KcpConn
+    mtu: $KcpMtu
+    sndwnd: $KcpSndWnd
+    rcvwnd: $KcpRcvWnd
+    nodelay: $KcpNoDelay
+    interval: $KcpInterval
+    resend: $KcpResend
+    nocongestion: $KcpNoCongestion
+    sockbuf: $KcpSockBuf
+    smuxbuf: $KcpSmuxBuf
 "@
 
     # Ensure install directory exists
@@ -447,12 +531,13 @@ transport:
     }
 
     [System.IO.File]::WriteAllText($ConfigFile, $config)
-    Save-Settings -Backend "paqet" -ServerAddr $Server
+    Save-Settings -Backend "paqet" -ServerAddr $Server -SocksPort $SocksPort -RoutingMode $RoutingMode -ForwardPort $ForwardPort -ForwardTarget $ForwardTarget -KcpProfile $KcpProfile
     Write-Success "Configuration saved"
     return $true
 }
 
 function Start-Paqet {
+    Remove-Item -Path "$InstallDir\.stopped" -Force -ErrorAction SilentlyContinue 2>$null
     if (-not (Test-Npcap)) {
         if (-not (Install-NpcapIfMissing)) { return }
     }
@@ -657,6 +742,7 @@ socks_port = $SocksPort
 }
 
 function Start-Gfk {
+    Remove-Item -Path "$InstallDir\.stopped" -Force -ErrorAction SilentlyContinue 2>$null
     if (-not (Test-Npcap)) {
         if (-not (Install-NpcapIfMissing)) { return }
     }
@@ -701,9 +787,10 @@ function Start-Gfk {
 }
 
 function Stop-GfkClient {
+    New-Item -Path "$InstallDir\.stopped" -ItemType File -Force 2>$null | Out-Null
     # Get-Process doesn't have CommandLine property - use CIM instead
     $procs = Get-CimInstance Win32_Process -Filter "Name LIKE 'python%'" -ErrorAction SilentlyContinue |
-             Where-Object { $_.CommandLine -match "mainclient|gfk" }
+             Where-Object { $_.CommandLine -match "mainclient|quic_client|vio_client|gfk" }
     if ($procs) {
         $procs | ForEach-Object {
             Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue
@@ -719,6 +806,7 @@ function Stop-GfkClient {
 #═══════════════════════════════════════════════════════════════════════
 
 function Stop-Client {
+    New-Item -Path "$InstallDir\.stopped" -ItemType File -Force 2>$null | Out-Null
     # Stop paqet
     $paqetProc = Get-Process -Name "paqet_windows_amd64" -ErrorAction SilentlyContinue
     if ($paqetProc) {
@@ -775,6 +863,16 @@ function Get-ClientStatus {
     if ($paqetRunning) {
         Write-Success "Paqet: RUNNING (PID: $($paqetRunning.Id))"
         Write-Info "  SOCKS5 proxy: 127.0.0.1:1080"
+    }
+    $gfkRunning = Get-CimInstance Win32_Process -Filter "Name LIKE 'python%'" -ErrorAction SilentlyContinue |
+                  Where-Object { $_.CommandLine -match "mainclient|quic_client|vio_client" }
+    if ($gfkRunning) {
+        $pids = ($gfkRunning | Select-Object -ExpandProperty ProcessId) -join ", "
+        Write-Success "GFK: RUNNING (PIDs: $pids)"
+        Write-Info "  SOCKS5 proxy: 127.0.0.1:14000"
+    }
+    if (-not $paqetRunning -and -not $gfkRunning) {
+        Write-Warn "Status: STOPPED (neither Paqet nor GFK is running)"
     }
 
     Write-Host ""
@@ -990,7 +1088,7 @@ function Test-ServerConnection {
         }
         $serverIP = ""
         Get-Content "$GfkDir\parameters.py" -ErrorAction SilentlyContinue | ForEach-Object {
-            if ($_ -match 'REMOTE_HOST\s*=\s*.+?([0-9a-zA-Z\.\-]+)') {
+            if ($_ -match '(?:vps_ip|REMOTE_HOST)\s*=\s*["'']?([0-9a-zA-Z\.\-]+)["'']?') {
                 $serverIP = $Matches[1]
             }
         }
@@ -1107,16 +1205,25 @@ function Manage-ConfigString {
             if ($content -match 'server:\s*["'']?([^"''\s]+)["'']?') { $server = $Matches[1] }
             if ($content -match 'key:\s*["'']?([^"''\s]+)["'']?') { $key = $Matches[1] }
             if (-not $server -or -not $key) { Write-Err "Could not parse server/key from config."; return }
-            $raw = "paqet|$server|$key|1080"
+            $rmode = Get-Setting -Key "ROUTING_MODE" -DefaultValue "socks5"
+            $fport = Get-Setting -Key "FORWARD_PORT" -DefaultValue "14000"
+            $ftgt = Get-Setting -Key "FORWARD_TARGET" -DefaultValue "127.0.0.1:80"
+            $prof = Get-Setting -Key "KCP_PROFILE" -DefaultValue "standard"
+            $ip = $server; $port = "8443"
+            if ($server -match '^([0-9a-zA-Z\.\-_]+|\[[0-9a-fA-F:]+\]):([0-9]+)$') {
+                $ip = $Matches[1]; $port = $Matches[2]
+            }
+            $socksPort = Get-Setting -Key "SOCKS_PORT" -DefaultValue "1080"
+            $raw = "paqet|$ip|$port|$key|$socksPort|$rmode|$fport|$ftgt|$prof"
             $b64 = [Convert]::ToBase64String([System.Text.Encoding]::UTF8.GetBytes($raw))
-            Write-Host "  Shareable Paqet String:" -ForegroundColor White
+            Write-Host "  Shareable Paqet String (v2 format):" -ForegroundColor White
             Write-Host "  paqet://$b64" -ForegroundColor Green
         } elseif ($backend -eq "gfk") {
             if (-not (Test-Path "$GfkDir\parameters.py")) { Write-Err "GFK config not found."; return }
             $server = ""; $auth = ""
             Get-Content "$GfkDir\parameters.py" -ErrorAction SilentlyContinue | ForEach-Object {
-                if ($_ -match 'REMOTE_HOST\s*=\s*.+?([0-9a-zA-Z\.\-]+)') { $server = $Matches[1] }
-                if ($_ -match 'AUTH_CODE\s*=\s*b?["'']([^"'']+)["'']') { $auth = $Matches[1] }
+                if ($_ -match '(?:vps_ip|REMOTE_HOST)\s*=\s*["'']?([0-9a-zA-Z\.\-]+)["'']?') { $server = $Matches[1] }
+                if ($_ -match '(?:quic_auth_code|AUTH_CODE)\s*=\s*b?["'']([^"'']+)["'']') { $auth = $Matches[1] }
             }
             if (-not $server -or -not $auth) { Write-Err "Could not parse server/auth from GFK config."; return }
             $raw = "gfk|$server|$auth|14000:443|14000"
@@ -1130,25 +1237,43 @@ function Manage-ConfigString {
         $str = Read-Host "  Paste config string (paqet://... or gfk://...)"
         if (-not $str) { return }
         if ($str -match '^paqet://(.+)$') {
-            $decoded = [System.Text.Encoding]::UTF8.GetString([Convert]::FromBase64String($Matches[1]))
+            $b64 = $Matches[1].Trim() -replace '-', '+' -replace '_', '/'
+            switch ($b64.Length % 4) { 2 { $b64 += "==" } 3 { $b64 += "=" } }
+            try {
+                $decoded = [System.Text.Encoding]::UTF8.GetString([Convert]::FromBase64String($b64))
+            } catch { Write-Err "Invalid or corrupted base64 string."; return }
             $parts = $decoded -split '\|'
             if ($parts.Length -lt 3 -or $parts[0] -ne "paqet") { Write-Err "Invalid paqet string."; return }
-            $server = $parts[1]; $key = $parts[2]
+            if ($parts[1] -match '^([0-9a-zA-Z\.\-_]+|\[[0-9a-fA-F:]+\]):([0-9]+)$') {
+                # 8-part combined format: paqet|IP:PORT|KEY|SOCKS|RMODE|FPORT|FTGT|PROF
+                $server = $parts[1]; $key = $parts[2]
+                $socks = if ($parts.Length -gt 3 -and $parts[3]) { $parts[3] } else { "1080" }
+                $rmode = if ($parts.Length -gt 4 -and $parts[4]) { $parts[4] } else { "socks5" }
+                $fport = if ($parts.Length -gt 5 -and $parts[5]) { $parts[5] } else { "14000" }
+                $ftgt = if ($parts.Length -gt 6 -and $parts[6]) { $parts[6] } else { "127.0.0.1:80" }
+                $prof = if ($parts.Length -gt 7 -and $parts[7]) { $parts[7] } else { "standard" }
+            } else {
+                # 9-part separate format: paqet|IP|PORT|KEY|SOCKS|RMODE|FPORT|FTGT|PROF
+                $server = "$($parts[1]):$($parts[2])"; $key = $parts[3]
+                $socks = if ($parts.Length -gt 4 -and $parts[4]) { $parts[4] } else { "1080" }
+                $rmode = if ($parts.Length -gt 5 -and $parts[5]) { $parts[5] } else { "socks5" }
+                $fport = if ($parts.Length -gt 6 -and $parts[6]) { $parts[6] } else { "14000" }
+                $ftgt = if ($parts.Length -gt 7 -and $parts[7]) { $parts[7] } else { "127.0.0.1:80" }
+                $prof = if ($parts.Length -gt 8 -and $parts[8]) { $parts[8] } else { "standard" }
+            }
+
             Write-Info "Importing Paqet config ($server)..."
             if (-not (Test-Path $InstallDir)) { New-Item -ItemType Directory -Path $InstallDir -Force | Out-Null }
-            $cfgContent = @"
-# Auto-generated by paqet-client import
-role: "client"
-server: "$server"
-listen: "127.0.0.1:1080"
-key: "$key"
-log_level: "info"
-"@
-            Set-Content -Path $ConfigFile -Value $cfgContent -Encoding UTF8
+            New-PaqetConfig -Server $server -SecretKey $key -RoutingMode $rmode -SocksPort $socks -ForwardPort $fport -ForwardTarget $ftgt -KcpProfile $prof | Out-Null
+            Save-Settings -Backend "paqet" -ServerAddr $server -SocksPort $socks -RoutingMode $rmode -ForwardPort $fport -ForwardTarget $ftgt -KcpProfile $prof
             Write-Success "Paqet config imported! Starting service..."
             Start-Paqet
         } elseif ($str -match '^gfk://(.+)$') {
-            $decoded = [System.Text.Encoding]::UTF8.GetString([Convert]::FromBase64String($Matches[1]))
+            $b64 = $Matches[1].Trim() -replace '-', '+' -replace '_', '/'
+            switch ($b64.Length % 4) { 2 { $b64 += "==" } 3 { $b64 += "=" } }
+            try {
+                $decoded = [System.Text.Encoding]::UTF8.GetString([Convert]::FromBase64String($b64))
+            } catch { Write-Err "Invalid or corrupted base64 string."; return }
             $parts = $decoded -split '\|'
             if ($parts.Length -lt 3 -or $parts[0] -ne "gfk") { Write-Err "Invalid gfk string."; return }
             $server = $parts[1]; $auth = $parts[2]
@@ -1186,6 +1311,252 @@ function Clear-SystemCache {
 }
 
 #═══════════════════════════════════════════════════════════════════════
+# Paqet v1.1.0 Performance Tuning, Watchdog & Shortcuts
+#═══════════════════════════════════════════════════════════════════════
+
+function Apply-ClientConfig {
+    $backend = Get-InstalledBackend
+    if ($backend -eq "paqet") {
+        $server = Get-Setting -Key "SERVER_ADDR"
+        $key = ""
+        if (Test-Path $ConfigFile) {
+            $content = Get-Content $ConfigFile -Raw
+            if ($content -match 'key:\s*["'']?([^"''\s]+)["'']?') { $key = $Matches[1] }
+        }
+        if (-not $server -or -not $key) { return }
+        $rmode = Get-Setting -Key "ROUTING_MODE" -DefaultValue "socks5"
+        $socks = Get-Setting -Key "SOCKS_PORT" -DefaultValue "1080"
+        $fport = Get-Setting -Key "FORWARD_PORT" -DefaultValue "14000"
+        $ftgt = Get-Setting -Key "FORWARD_TARGET" -DefaultValue "127.0.0.1:80"
+        $prof = Get-Setting -Key "KCP_PROFILE" -DefaultValue "standard"
+        New-PaqetConfig -Server $server -SecretKey $key -RoutingMode $rmode -SocksPort $socks -ForwardPort $fport -ForwardTarget $ftgt -KcpProfile $prof | Out-Null
+    }
+}
+
+function Restart-ClientService {
+    Write-Info "Restarting Client Service..."
+    Stop-Client
+    Start-Sleep -Seconds 1
+    $backend = Get-InstalledBackend
+    if ($backend -eq "paqet") { Start-Paqet } elseif ($backend -eq "gfk") { Start-Gfk }
+}
+
+function Select-PerformanceProfile {
+    Write-Host ""
+    Write-Host "====================================================================" -ForegroundColor Cyan
+    Write-Host "  PERFORMANCE PROFILE SELECTION" -ForegroundColor Cyan
+    Write-Host "====================================================================" -ForegroundColor Cyan
+    Write-Host "  Note: Select a profile that matches your network link quality."
+    Write-Host ""
+    Write-Host "  1) Standard / Balanced [DEFAULT - conn: 2, mtu: 1350]"
+    Write-Host "     • Smart default for general internet uplinks and everyday usage."
+    Write-Host ""
+    Write-Host "  2) High-Loss / Restricted Uplink [conn: 4, wnd: 1024, mtu: 1300]"
+    Write-Host "     • Optimized for restricted networks, severe packet loss, or heavy DPI."
+    Write-Host ""
+    Write-Host "  3) High-Throughput / CDN Tunnel [conn: 8, wnd: 2048, sockbuf: 8MB]"
+    Write-Host "     • Maximized concurrency for multi-layer CDN routing or Gigabit fiber."
+    Write-Host ""
+    Write-Host "  4) Low-Latency / Gaming & VOIP [conn: 2, mtu: 1200, nodelay: 1]"
+    Write-Host "     • Ultra-fast response times for real-time applications."
+    Write-Host "====================================================================" -ForegroundColor Cyan
+    Write-Host ""
+    $pChoice = Read-Host "  Select Profile [1-4, default: 1]"
+    if (-not $pChoice) { $pChoice = "1" }
+    $profile = "standard"; $conn = "2"; $mtu = "1350"; $sndwnd = "1024"; $rcvwnd = "1024"
+    $nodelay = "0"; $interval = "20"; $resend = "2"; $nocongestion = "0"; $sockbuf = "4194304"; $smuxbuf = "4194304"
+    switch ($pChoice) {
+        "2" {
+            $profile = "highloss"; $conn = "4"; $mtu = "1300"; $sndwnd = "1024"; $rcvwnd = "1024"
+            $nodelay = "0"; $interval = "20"; $resend = "2"; $nocongestion = "0"; $sockbuf = "4194304"; $smuxbuf = "4194304"
+        }
+        "3" {
+            $profile = "cdntunnel"; $conn = "8"; $mtu = "1400"; $sndwnd = "2048"; $rcvwnd = "2048"
+            $nodelay = "0"; $interval = "20"; $resend = "2"; $nocongestion = "0"; $sockbuf = "8388608"; $smuxbuf = "8388608"
+        }
+        "4" {
+            $profile = "gaming"; $conn = "2"; $mtu = "1200"; $sndwnd = "512"; $rcvwnd = "512"
+            $nodelay = "1"; $interval = "10"; $resend = "2"; $nocongestion = "1"; $sockbuf = "4194304"; $smuxbuf = "4194304"
+        }
+    }
+    Save-Settings -Backend (Get-InstalledBackend) -KcpProfile $profile
+    $existing = @{}
+    if (Test-Path $SettingsFile) {
+        Get-Content $SettingsFile -ErrorAction SilentlyContinue | ForEach-Object {
+            if ($_ -match '^([^=]+)="?(.*)"?$') { $existing[$Matches[1]] = $Matches[2] }
+        }
+    }
+    $existing["KCP_PROFILE"] = $profile; $existing["KCP_CONN"] = $conn; $existing["KCP_MTU"] = $mtu
+    $existing["KCP_SNDWND"] = $sndwnd; $existing["KCP_RCVWND"] = $rcvwnd; $existing["KCP_NODELAY"] = $nodelay
+    $existing["KCP_INTERVAL"] = $interval; $existing["KCP_RESEND"] = $resend; $existing["KCP_NOCONGESTION"] = $nocongestion
+    $existing["KCP_SOCKBUF"] = $sockbuf; $existing["KCP_SMUXBUF"] = $smuxbuf
+    $lines = @()
+    foreach ($key in $existing.Keys) { $lines += "$key=`"$($existing[$key])`"" }
+    [System.IO.File]::WriteAllLines($SettingsFile, $lines)
+    Write-Info "Performance Profile set to: $profile"
+}
+
+function Find-OptimalMtu {
+    Write-Info "Running Smart MTU Auto-Discovery..."
+    $server = Get-Setting -Key "SERVER_ADDR" -DefaultValue "8.8.8.8"
+    $target = ($server -split ':')[0]
+    if (-not $target) { $target = "8.8.8.8" }
+    Write-Info "  Testing path MTU to $target..."
+    $mtu = 1460
+    $found = 0
+    while ($mtu -ge 1200) {
+        $bufferSize = $mtu - 28
+        $res = ping -n 1 -w 1000 -f -l $bufferSize $target 2>&1 | Out-String
+        if ($LASTEXITCODE -eq 0 -and ($res -match "TTL=|ttl=|time=|Reply from|bytes=$bufferSize")) {
+            $found = $mtu
+            break
+        }
+        $mtu -= 20
+    }
+    Write-Host ""
+    if ($found -eq 0) {
+        Write-Warn "ICMP ping blocked by network or firewall. Defaulting to safe MTU: 1350"
+        $found = 1350
+    } else {
+        Write-Host "  Optimal path MTU detected: " -NoNewline; Write-Host "$found" -ForegroundColor Green
+    }
+    Write-Host "  (Accounted for IP/UDP headers without packet fragmentation)" -ForegroundColor DarkGray
+    $existing = @{}
+    if (Test-Path $SettingsFile) {
+        Get-Content $SettingsFile -ErrorAction SilentlyContinue | ForEach-Object {
+            if ($_ -match '^([^=]+)="?(.*)"?$') { $existing[$Matches[1]] = $Matches[2] }
+        }
+    }
+    $existing["KCP_MTU"] = "$found"
+    $lines = @()
+    foreach ($key in $existing.Keys) { $lines += "$key=`"$($existing[$key])`"" }
+    [System.IO.File]::WriteAllLines($SettingsFile, $lines)
+}
+
+function Toggle-WindowsTurbo {
+    $turbo = Get-Setting -Key "TURBO_ENABLED" -DefaultValue "false"
+    if ($turbo -eq "true") {
+        Write-Info "Disabling Windows Turbo Mode..."
+        netsh int tcp set global autotuninglevel=normal 2>$null
+        netsh int tcp set global ecncapability=disabled 2>$null
+        netsh int tcp set global timestamps=disabled 2>$null
+        Save-Settings -Backend (Get-InstalledBackend) -TurboEnabled "false"
+        Write-Info "Windows Turbo Mode disabled."
+    } else {
+        Write-Info "Enabling Windows Turbo Mode (TCP Window Scaling & ECN)..."
+        netsh int tcp set global autotuninglevel=experimental 2>$null
+        if ($LASTEXITCODE -ne 0) { netsh int tcp set global autotuninglevel=restricted 2>$null }
+        netsh int tcp set global ecncapability=enabled 2>$null
+        netsh int tcp set global timestamps=enabled 2>$null
+        netsh int tcp set global fastopen=enabled 2>$null
+        Save-Settings -Backend (Get-InstalledBackend) -TurboEnabled "true"
+        Write-Host "  Windows Turbo Mode enabled! TCP Auto-Tuning and ECN active." -ForegroundColor Green
+    }
+}
+
+function Toggle-Watchdog {
+    $watchdog = Get-Setting -Key "WATCHDOG_ENABLED" -DefaultValue "false"
+    $taskName = "PaqetClientWatchdog"
+    if ($watchdog -eq "true") {
+        Write-Info "Disabling Auto-Reconnect Watchdog..."
+        Unregister-ScheduledTask -TaskName $taskName -Confirm:$false -ErrorAction SilentlyContinue
+        Save-Settings -Backend (Get-InstalledBackend) -WatchdogEnabled "false"
+        Write-Info "Watchdog disabled and scheduled task removed."
+    } else {
+        Write-Info "Enabling Auto-Reconnect Watchdog (Scheduled Task)..."
+        $backend = Get-InstalledBackend
+        if (-not $backend) {
+            Write-Warn "No backend installed. Cannot enable watchdog."
+            return
+        }
+        $scriptPath = "$PSScriptRoot\paqet-client.ps1"
+        $action = New-ScheduledTaskAction -Execute "powershell.exe" -Argument "-WindowStyle Hidden -ExecutionPolicy Bypass -File `"$scriptPath`" -WatchdogCheck"
+        $trigger = New-ScheduledTaskTrigger -Once -At (Get-Date) -RepetitionInterval (New-TimeSpan -Minutes 1) -RepetitionDuration ([TimeSpan]::MaxValue)
+        $settings = New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries -StartWhenAvailable
+        Register-ScheduledTask -TaskName $taskName -Action $action -Trigger $trigger -Settings $settings -User "NT AUTHORITY\SYSTEM" -RunLevel Highest -Force 2>$null | Out-Null
+        
+        Save-Settings -Backend $backend -WatchdogEnabled "true"
+        Write-Host "  Watchdog enabled! Windows will check health and auto-reconnect every 1m." -ForegroundColor Green
+    }
+}
+
+function New-DesktopShortcut {
+    Write-Info "Creating Desktop Shortcut..."
+    $desktopPath = [Environment]::GetFolderPath("Desktop")
+    $shortcutPath = "$desktopPath\Paqet Client.lnk"
+    $batPath = "$PSScriptRoot\Paqet-Client.bat"
+    
+    $WshShell = New-Object -ComObject WScript.Shell
+    $shortcut = $WshShell.CreateShortcut($shortcutPath)
+    $shortcut.TargetPath = $batPath
+    $shortcut.WorkingDirectory = $PSScriptRoot
+    $shortcut.Description = "Paqet/GFK Client Manager (v1.1.0)"
+    $shortcut.Save()
+    Write-Host "  Desktop shortcut created at: $shortcutPath" -ForegroundColor Green
+}
+
+function Show-TuningMenu {
+    while ($true) {
+        $profile = Get-Setting -Key "KCP_PROFILE" -DefaultValue "standard"
+        $turbo = Get-Setting -Key "TURBO_ENABLED" -DefaultValue "false"
+        $watchdog = Get-Setting -Key "WATCHDOG_ENABLED" -DefaultValue "false"
+        $mtu = Get-Setting -Key "KCP_MTU" -DefaultValue "1350"
+        $conn = Get-Setting -Key "KCP_CONN" -DefaultValue "2"
+
+        Write-Host ""
+        Write-Host "===============================================" -ForegroundColor Cyan
+        Write-Host "  PERFORMANCE & SUPERCHARGING MENU (v1.1.0)" -ForegroundColor Cyan
+        Write-Host "===============================================" -ForegroundColor Cyan
+        Write-Host ""
+        Write-Host "  Current Profile : " -NoNewline; Write-Host "$profile" -ForegroundColor Green -NoNewline; Write-Host " (conn: $conn, mtu: $mtu)"
+        Write-Host "  Windows Turbo   : " -NoNewline; if ($turbo -eq "true") { Write-Host "ENABLED (TCP Window/Buffer Scaling)" -ForegroundColor Green } else { Write-Host "DISABLED" -ForegroundColor Red }
+        Write-Host "  Watchdog Monitor: " -NoNewline; if ($watchdog -eq "true") { Write-Host "ENABLED (Auto-Reconnect Task)" -ForegroundColor Green } else { Write-Host "DISABLED" -ForegroundColor Red }
+        Write-Host ""
+        Write-Host "  1. Select Performance Profile (Standard/High-Loss/CDN/Gaming)"
+        Write-Host "  2. Run Smart MTU Auto-Discovery"
+        Write-Host "  3. Toggle Windows Turbo Mode (TCP Auto-Tuning & Buffer Scaling)"
+        Write-Host "  4. Toggle Auto-Reconnect Watchdog (Scheduled Task)"
+        Write-Host "  5. Apply & Restart Client Service"
+        Write-Host "  0. Back to Main Menu"
+        Write-Host ""
+        $choice = Read-Host "  Select option [1-5/0]"
+        switch ($choice) {
+            "1" { Select-PerformanceProfile; Apply-ClientConfig; Write-Info "Profile applied to config.yaml" }
+            "2" { Find-OptimalMtu; Apply-ClientConfig; Write-Info "Optimal MTU applied to config.yaml" }
+            "3" { Toggle-WindowsTurbo }
+            "4" { Toggle-Watchdog }
+            "5" { Apply-ClientConfig; Restart-ClientService }
+            "0" { return }
+            default { Write-Warn "Invalid option" }
+        }
+    }
+}
+
+function Show-ShortcutAndWatchdogMenu {
+    while ($true) {
+        $watchdog = Get-Setting -Key "WATCHDOG_ENABLED" -DefaultValue "false"
+        Write-Host ""
+        Write-Host "===============================================" -ForegroundColor Cyan
+        Write-Host "  DESKTOP SHORTCUT & AUTO-RECONNECT SETUP" -ForegroundColor Cyan
+        Write-Host "===============================================" -ForegroundColor Cyan
+        Write-Host ""
+        Write-Host "  Watchdog Status : " -NoNewline; if ($watchdog -eq "true") { Write-Host "ENABLED (1m Auto-Reconnect Task)" -ForegroundColor Green } else { Write-Host "DISABLED" -ForegroundColor Red }
+        Write-Host ""
+        Write-Host "  1. Create / Update Desktop Shortcut"
+        Write-Host "  2. Toggle Auto-Reconnect Watchdog (Scheduled Task)"
+        Write-Host "  0. Back to Main Menu"
+        Write-Host ""
+        $choice = Read-Host "  Select option [1-2/0]"
+        switch ($choice) {
+            "1" { New-DesktopShortcut }
+            "2" { Toggle-Watchdog }
+            "0" { return }
+            default { Write-Warn "Invalid option" }
+        }
+    }
+}
+
+#═══════════════════════════════════════════════════════════════════════
 # Interactive Menu
 #═══════════════════════════════════════════════════════════════════════
 
@@ -1198,7 +1569,7 @@ function Show-Menu {
     while ($true) {
         Write-Host ""
         Write-Host "===============================================" -ForegroundColor Cyan
-        Write-Host "  PAQET/GFK CLIENT MANAGER (v1.0.1)" -ForegroundColor Cyan
+        Write-Host "  PAQET/GFK CLIENT MANAGER (v1.1.0)" -ForegroundColor Cyan
         Write-Host "===============================================" -ForegroundColor Cyan
         Write-Host ""
         if ($backend) {
@@ -1226,6 +1597,8 @@ function Show-Menu {
         Write-Host "  11. Speed & Bandwidth Test"
         Write-Host "  12. Export / Import Config String"
         Write-Host "  13. System Cleanup & Cache Flush"
+        Write-Host "  14. Performance & KCP Tuning Menu (v1.1.0)" -ForegroundColor Green
+        Write-Host "  15. Desktop Shortcut & Auto-Reconnect Setup" -ForegroundColor Green
         Write-Host "  0. Exit"
         Write-Host ""
 
@@ -1263,9 +1636,59 @@ function Show-Menu {
                     if (-not $tcpRemote) { $tcpRemote = "PA" }
 
                     if ($server -and $key) {
-                        if (New-PaqetConfig -Server $server -SecretKey $key -TcpLocalFlag $tcpLocal -TcpRemoteFlag $tcpRemote) {
+                        Write-Host ""
+                        Write-Host "====================================================================" -ForegroundColor Cyan
+                        Write-Host "  ROUTING MODE SELECTION" -ForegroundColor Cyan
+                        Write-Host "====================================================================" -ForegroundColor Cyan
+                        Write-Host "  Note: Choose how traffic is handled across your proxy tunnel."
+                        Write-Host ""
+                        Write-Host "  1) SOCKS5 Proxy Mode [DEFAULT - Recommended for most users]"
+                        Write-Host "     • Creates a standard all-in-one SOCKS5 proxy on port 1080."
+                        Write-Host "     • Best for direct browser browsing, Telegram, and general apps."
+                        Write-Host ""
+                        Write-Host "  2) Direct Port Forwarding Mode [For advanced server-to-server setups]"
+                        Write-Host "     • Forwards raw TCP/UDP traffic directly without SOCKS5 overhead."
+                        Write-Host "     • Best for connecting backend Xray/sing-box panels or CDN tunnels."
+                        Write-Host "====================================================================" -ForegroundColor Cyan
+                        Write-Host ""
+                        $rChoice = Read-Host "  Select Routing Mode [1-2, default: 1]"
+                        $rmode = "socks5"; $socks = "1080"; $fport = "14000"; $ftgt = "127.0.0.1:80"
+                        if ($rChoice -eq "2") {
+                            $rmode = "forward"
+                            $inputPort = Read-Host "  Local Forward Listen Port [14000]"
+                            if ($inputPort) { $fport = $inputPort }
+                            $inputTgt = Read-Host "  Target Address (IP:PORT) [127.0.0.1:80]"
+                            if ($inputTgt) { $ftgt = $inputTgt }
+                        } else {
+                            $inputSocks = Read-Host "  SOCKS5 Port [1080]"
+                            if ($inputSocks) { $socks = $inputSocks }
+                        }
+
+                        Write-Host ""
+                        Write-Host "====================================================================" -ForegroundColor Cyan
+                        Write-Host "  PERFORMANCE PROFILE SELECTION" -ForegroundColor Cyan
+                        Write-Host "====================================================================" -ForegroundColor Cyan
+                        Write-Host "  1) Standard / Balanced [DEFAULT]"
+                        Write-Host "  2) High-Loss / Restricted Uplink"
+                        Write-Host "  3) High-Throughput / CDN Tunnel"
+                        Write-Host "  4) Low-Latency / Gaming & VOIP"
+                        Write-Host "====================================================================" -ForegroundColor Cyan
+                        $pChoice = Read-Host "  Select Profile [1-4, default: 1]"
+                        $prof = "standard"
+                        switch ($pChoice) {
+                            "2" { $prof = "highloss" }
+                            "3" { $prof = "cdntunnel" }
+                            "4" { $prof = "gaming" }
+                        }
+
+                        if (New-PaqetConfig -Server $server -SecretKey $key -TcpLocalFlag $tcpLocal -TcpRemoteFlag $tcpRemote -RoutingMode $rmode -SocksPort $socks -ForwardPort $fport -ForwardTarget $ftgt -KcpProfile $prof) {
                             Write-Host ""
-                            Write-Host "  Your SOCKS5 proxy: 127.0.0.1:1080" -ForegroundColor Green
+                            if ($rmode -eq "forward") {
+                                Write-Host "  Port Forwarding active on: 0.0.0.0:$fport -> $ftgt" -ForegroundColor Green
+                            } else {
+                                Write-Host "  Your SOCKS5 proxy: 127.0.0.1:$socks" -ForegroundColor Green
+                            }
+                            Save-Settings -Backend "paqet" -ServerAddr $server -SocksPort $socks -RoutingMode $rmode -ForwardPort $fport -ForwardTarget $ftgt -KcpProfile $prof
                         }
                     }
                 } else {
@@ -1312,6 +1735,8 @@ function Show-Menu {
             "11" { Test-ServerSpeed }
             "12" { Manage-ConfigString }
             "13" { Clear-SystemCache }
+            "14" { Show-TuningMenu }
+            "15" { Show-ShortcutAndWatchdogMenu }
             "0" { return }
             default { Write-Warn "Invalid option" }
         }
@@ -1321,7 +1746,7 @@ function Show-Menu {
 function Show-About {
     Write-Host ""
     Write-Host "===============================================" -ForegroundColor Cyan
-    Write-Host "  HOW IT WORKS (v1.0.1)" -ForegroundColor Cyan
+    Write-Host "  HOW IT WORKS (v1.1.0)" -ForegroundColor Cyan
     Write-Host "===============================================" -ForegroundColor Cyan
     Write-Host ""
     Write-Host "  This tool helps bypass firewall restrictions"
@@ -1357,12 +1782,31 @@ if (-not (Test-Admin)) {
     exit 1
 }
 
+if ($WatchdogCheck) {
+    if (Test-Path "$InstallDir\.stopped") {
+        exit 0
+    }
+    $backend = Get-InstalledBackend
+    if ($backend -eq "paqet") {
+        $running = Get-Process -Name "paqet_windows_amd64" -ErrorAction SilentlyContinue
+        if (-not $running) { Start-Paqet }
+    } elseif ($backend -eq "gfk") {
+        $running = Get-Process -Name "python" -ErrorAction SilentlyContinue | Where-Object { $_.MainWindowTitle -match "gfk|quic" -or $_.CommandLine -match "gfk|quic" }
+        if (-not $running) { Start-Gfk }
+    }
+    exit 0
+}
+
 # Auto-detect backend if not specified
 if (-not $Backend) {
     $Backend = Get-InstalledBackend
 }
 
 switch ($Action.ToLower()) {
+    "turbo" { Toggle-WindowsTurbo }
+    "watchdog" { Toggle-Watchdog }
+    "tune" { Show-TuningMenu }
+    "shortcut" { New-DesktopShortcut }
     "install" {
         if ($Backend -eq "gfk") {
             Install-Gfk

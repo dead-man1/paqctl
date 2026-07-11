@@ -228,6 +228,23 @@ paqctl will add SOCKS5 on the next available port and append it automatically.
 
 ---
 
+## 🚀 What's New in v1.1.0: Simple Setup, Universal Performance Tuning & OS Turbo Mode
+
+paqctl v1.1.0 introduces powerful automated optimizations while making installation simpler than ever:
+
+- **⚡ Simple 2-Option Setup Wizard**: During setup on Linux and Windows, choose between **SOCKS5 Proxy Mode** (default all-in-one browser proxy) or **Direct Port Forwarding Mode** (advanced raw TCP/UDP forwarding without SOCKS overhead) with clear explanations.
+- **🎛️ Universal Performance Profiles**: Match your connection quality with 4 curated KCP profiles:
+  - **Standard / Balanced**: Smart defaults for everyday browsing and general internet uplinks.
+  - **High-Loss / Restricted Uplink**: Optimized for severe censorship, packet loss, or heavy DPI.
+  - **High-Throughput / CDN Tunnel**: Maximized concurrency and window buffers for multi-layer CDN routing or Gigabit fiber.
+  - **Low-Latency / Gaming & VOIP**: Zero-delay packet delivery for real-time applications.
+- **🚀 OS-Level Kernel Turbo Mode**: One-click Linux and Windows optimization (`sudo paqctl turbo` or client menu `o`/`3`). Automatically enables **TCP BBR congestion control**, expands OS socket buffers to **32MB**, optimizes TCP window scaling, and increases file descriptor limits.
+- **🛡️ Self-Healing Watchdog & Auto-Recovery**: Zero-downtime monitoring (`sudo paqctl watchdog` or client menu `w`/`4`). Deploys background timers (systemd on Linux, Task Scheduler on Windows) to continuously check connection health and auto-recover stalled tunnels.
+- **⚡ Smart MTU Auto-Discovery**: Automatically calculates the exact path MTU to eliminate packet fragmentation and overhead.
+- **🖥️ Windows Desktop Shortcuts & Auto-Reconnect**: Create instant desktop shortcuts and persistent auto-reconnect loops directly from the Windows client menu.
+
+---
+
 ## Quick Start
 
 ### 1. Server Setup (Linux VPS)
@@ -373,7 +390,7 @@ You'll see an interactive menu:
 
 ```
 ===============================================
-  PAQET/GFK CLIENT MANAGER (v1.0.1)
+  PAQET/GFK CLIENT MANAGER (v1.1.0)
 ===============================================
 
   No backend installed yet
@@ -391,6 +408,8 @@ You'll see an interactive menu:
   11. Speed & Bandwidth Test
   12. Export / Import Config String
   13. System Cleanup & Cache Flush
+  14. Performance & KCP Tuning Menu (v1.1.0)
+  15. Desktop Shortcut & Auto-Reconnect Setup
   0. Exit
 
   Select option:
@@ -1092,6 +1111,11 @@ sudo paqctl ban <ip>    # Ban an IP address (DROP traffic via firewalld/iptables
 sudo paqctl unban <ip>  # Unban an IP address
 sudo paqctl rotate-key  # One-Click Encryption Key / Auth Code Rotation
 
+# Performance & Tuning (v1.1.0)
+sudo paqctl turbo       # Toggle OS-Level Kernel Turbo Mode (BBR, Buffer Scaling)
+sudo paqctl watchdog    # Toggle Self-Healing Watchdog & Auto-Recovery (Zero Downtime)
+sudo paqctl tune        # Performance & KCP Profile Tuning Menu (Standard, High-Loss, CDN, Gaming)
+
 # Maintenance & QoL
 sudo paqctl cleanup     # System Cleanup (clean logs, temp files, drop OS caches)
 sudo paqctl export      # Export shareable config string (paqet://... or gfk://...)
@@ -1393,6 +1417,23 @@ paqctl به صورت خودکار SOCKS5 را روی پورت آزاد بعدی 
 
 ---
 
+## 🚀 امکانات جدید نسخه v1.1.0: راه‌اندازی آسان، بهینه‌سازی هوشمند و حالت توربو
+
+در نسخه v1.1.0، نصب و پیکربندی paqctl ساده‌تر از همیشه شده و ابزارهای قدرتمندی برای بهینه‌سازی سرعت و پایداری اضافه شده است:
+
+- **⚡ نصب ساده با ۲ گزینه کاربردی**: در هنگام راه‌اندازی روی لینوکس و ویندوز، می‌توانید بین **حالت SOCKS5 Proxy** (پروکسی پیش‌فرض و همه‌کاره برای مرورگر و تلگرام) یا **حالت Direct Port Forwarding** (فوروارد مستقیم ترافیک TCP/UDP بدون سربار SOCKS برای پنل‌ها و تانل‌ها) انتخاب کنید.
+- **🎛️ پروفایل‌های بهینه‌سازی عملکرد (Performance Profiles)**: بر اساس کیفیت شبکه و نوع اینترنت خود، از ۴ پروفایل آماده استفاده کنید:
+  - **استاندارد / متعادل (Standard)**: تنظیمات هوشمند برای استفاده روزمره و وب‌گردی.
+  - **ضد پکت‌لاس و محدودیت شدید (High-Loss)**: بهینه‌شده برای شبکه‌های با محدودیت بالا، فیلترینگ شدید و اختلال.
+  - **پهنای باند بالا / تانل CDN (High-Throughput)**: افزایش کانکشن‌های همزمان و بافرها برای تانل‌های CDN و فیبر نوری.
+  - **پینگ پایین / گیمینگ و تماس (Gaming & VOIP)**: ارسال بدون تاخیر بسته‌ها برای بازی‌های آنلاین و مکالمات صوتی.
+- **🚀 حالت توربو سیستم‌عامل (OS Turbo Mode)**: بهینه‌سازی یک-کلیک هسته لینوکس و ویندوز (`sudo paqctl turbo` یا گزینه `o` در منو). فعال‌سازی الگوریتم **TCP BBR**، افزایش بافر سوکت‌ها تا **۳۲ مگابایت** و بهینه‌سازی پارامترهای شبکه.
+- **🛡️ واچ‌داگ خودکار و ریکاوری بدون قطعی (Watchdog)**: پایش دائمی سلامت اتصال (`sudo paqctl watchdog` یا گزینه `w` در منو). با ایجاد سرویس بک‌گراند (systemd در لینوکس و Task Scheduler در ویندوز)، وضعیت تانل را هر ۱ دقیقه بررسی کرده و در صورت بروز اختلال، اتصال را به صورت خودکار بازیابی می‌کند.
+- **⚡ تشخیص هوشمند MTU**: محاسبه خودکار حداکثر اندازه بسته (MTU) در مسیر شبکه برای جلوگیری از تکه‌تکه شدن پکت‌ها و کاهش لتنسی.
+- **🖥️ ساخت شورت‌کات دسکتاپ و اتصال خودکار در ویندوز**: ایجاد شورت‌کات دسکتاپ و فعال‌سازی قابلیت اتصال خودکار از طریق منوی کلاینت ویندوز.
+
+---
+
 ## شروع سریع
 
 ### ۱. راه‌اندازی سرور (VPS لینوکس)
@@ -1529,7 +1570,7 @@ cd paqctl\windows
 
 ```
 ===============================================
-  PAQET/GFK CLIENT MANAGER (v1.0.1)
+  PAQET/GFK CLIENT MANAGER (v1.1.0)
 ===============================================
 
   1. Install paqet        (ساده، SOCKS5 همه‌کاره)
@@ -1545,6 +1586,8 @@ cd paqctl\windows
   11. Speed & Bandwidth Test
   12. Export / Import Config String
   13. System Cleanup & Cache Flush
+  14. Performance & KCP Tuning Menu (v1.1.0)
+  15. Desktop Shortcut & Auto-Reconnect Setup
   0. Exit
 
   Select option:
@@ -2140,6 +2183,11 @@ sudo paqctl routing     # بررسی نشت DNS و وضعیت روتینگ
 sudo paqctl ban <ip>    # مسدودسازی آی‌پی مزاحم در فایروال
 sudo paqctl unban <ip>  # رفع مسدودی آی‌پی
 sudo paqctl rotate-key  # تغییر سریع و خودکار کلید رمزنگاری / کد احراز هویت
+
+# بهینه‌سازی و توربو (نسخه v1.1.0)
+sudo paqctl turbo       # فعال‌سازی حالت توربو هسته سیستم‌عامل (BBR و بافر پرسرعت)
+sudo paqctl watchdog    # واچ‌داگ خودکار جهت پایش سلامت و ریکاوری بدون قطعی
+sudo paqctl tune        # منوی تنظیمات پروفایل‌های بهینه‌سازی KCP (استاندارد، ضد-پکت‌لاس، ترافیک CDN، گیمینگ)
 
 # نگهداری و ابزارهای کاربردی
 sudo paqctl cleanup     # پاکسازی کش سیستم، لاگ‌های قدیمی و فایل‌های موقت

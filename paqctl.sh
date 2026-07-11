@@ -1,7 +1,7 @@
 #!/bin/bash
 #
 # ╔═══════════════════════════════════════════════════════════════════╗
-# ║      PAQCTL - Paqet Manager v1.0.1                                ║
+# ║      PAQCTL - Paqet Manager v1.1.0                                ║
 # ║                                                                   ║
 # ║  One-click setup for Paqet raw-socket proxy                       ║
 # ║                                                                   ║
@@ -22,6 +22,7 @@
 #
 
 set -eo pipefail
+export PATH="/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:$PATH"
 
 # Require bash
 if [ -z "$BASH_VERSION" ]; then
@@ -29,7 +30,7 @@ if [ -z "$BASH_VERSION" ]; then
     exit 1
 fi
 
-VERSION="1.0.1"
+VERSION="1.1.0"
 
 # Pinned versions for stability (update these after testing new releases)
 PAQET_VERSION_PINNED="v1.0.0-alpha.20"
@@ -632,6 +633,20 @@ run_config_wizard() {
         _wizard_gfk
     fi
 
+    echo ""
+    read -p "  Enable OS Kernel Turbo Mode (BBR + 32MB Buffers)? [Y/n]: " t_choice < /dev/tty || true
+    if [[ ! "${t_choice:-Y}" =~ ^[nN]$ ]]; then
+        TURBO_ENABLED="true"
+    else
+        TURBO_ENABLED="false"
+    fi
+    read -p "  Enable Self-Healing Watchdog (Auto-Recovery Service)? [Y/n]: " w_choice < /dev/tty || true
+    if [[ ! "${w_choice:-Y}" =~ ^[nN]$ ]]; then
+        WATCHDOG_ENABLED="true"
+    else
+        WATCHDOG_ENABLED="false"
+    fi
+
     # Save settings
     save_settings
 }
@@ -724,15 +739,77 @@ _wizard_paqet() {
         fi
 
         echo ""
-        echo -e "${BOLD}SOCKS5 listen port${NC} [1080]:"
-        read -p "  SOCKS port: " input < /dev/tty || true
-        SOCKS_PORT="${input:-1080}"
-        if ! [[ "$SOCKS_PORT" =~ ^[0-9]+$ ]] || [ "$SOCKS_PORT" -lt 1 ] || [ "$SOCKS_PORT" -gt 65535 ]; then
-            log_warn "Invalid port. Using default 1080."
+        echo "===================================================================="
+        echo "  ROUTING MODE SELECTION"
+        echo "===================================================================="
+        echo "  Note: Choose how traffic is handled across your proxy tunnel."
+        echo ""
+        echo "  1) SOCKS5 Proxy Mode [DEFAULT - Recommended for most users]"
+        echo "     • Creates a standard all-in-one SOCKS5 proxy on port 1080."
+        echo "     • Best for direct browser browsing, Telegram, and general apps."
+        echo ""
+        echo "  2) Direct Port Forwarding Mode [For advanced server-to-server setups]"
+        echo "     • Forwards raw TCP/UDP traffic directly without SOCKS5 overhead."
+        echo "     • Best for connecting backend Xray/sing-box panels or CDN tunnels."
+        echo "===================================================================="
+        echo ""
+        read -p "  Select Routing Mode [1-2, default: 1]: " r_choice < /dev/tty || true
+        r_choice="${r_choice:-1}"
+        if [ "$r_choice" = "2" ]; then
+            ROUTING_MODE="forward"
+            echo -e "${BOLD}Local Forward Listen Port${NC} [14000]:"
+            read -p "  Port: " input < /dev/tty || true; FORWARD_PORT="${input:-14000}"
+            echo -e "${BOLD}Target Address (IP:PORT)${NC} [127.0.0.1:80]:"
+            read -p "  Target: " input < /dev/tty || true; FORWARD_TARGET="${input:-127.0.0.1:80}"
             SOCKS_PORT=1080
+        else
+            ROUTING_MODE="socks5"
+            echo -e "${BOLD}SOCKS5 listen port${NC} [1080]:"
+            read -p "  SOCKS port: " input < /dev/tty || true
+            SOCKS_PORT="${input:-1080}"
+            if ! [[ "$SOCKS_PORT" =~ ^[0-9]+$ ]] || [ "$SOCKS_PORT" -lt 1 ] || [ "$SOCKS_PORT" -gt 65535 ]; then
+                log_warn "Invalid port. Using default 1080."
+                SOCKS_PORT=1080
+            fi
         fi
         LISTEN_PORT=""
     fi
+
+    echo ""
+    echo "===================================================================="
+    echo "  PERFORMANCE PROFILE SELECTION"
+    echo "===================================================================="
+    echo "  Note: Select a profile that matches your network link quality."
+    echo ""
+    echo "  1) Standard / Balanced [DEFAULT - conn: 2, mtu: 1350]"
+    echo "     • Smart default for general internet uplinks and everyday usage."
+    echo ""
+    echo "  2) High-Loss / Restricted Uplink [conn: 4, wnd: 1024, mtu: 1300]"
+    echo "     • Optimized for restricted networks, severe packet loss, or heavy DPI."
+    echo ""
+    echo "  3) High-Throughput / CDN Tunnel [conn: 8, wnd: 2048, sockbuf: 8MB]"
+    echo "     • Maximized concurrency for multi-layer CDN routing or Gigabit fiber."
+    echo ""
+    echo "  4) Low-Latency / Gaming & VOIP [conn: 2, mtu: 1200, nodelay: 1]"
+    echo "     • Ultra-fast response times for real-time applications."
+    echo "===================================================================="
+    echo ""
+    read -p "  Select Profile [1-4, default: 1]: " p_choice < /dev/tty || true
+    p_choice="${p_choice:-1}"
+    case "$p_choice" in
+        2)
+            KCP_PROFILE="highloss"; KCP_CONN=4; KCP_MTU=1300; KCP_SNDWND=1024; KCP_RCVWND=1024
+            KCP_NODELAY=0; KCP_INTERVAL=20; KCP_RESEND=2; KCP_NOCONGESTION=0; KCP_SOCKBUF=4194304; KCP_SMUXBUF=4194304 ;;
+        3)
+            KCP_PROFILE="cdntunnel"; KCP_CONN=8; KCP_MTU=1400; KCP_SNDWND=2048; KCP_RCVWND=2048
+            KCP_NODELAY=0; KCP_INTERVAL=20; KCP_RESEND=2; KCP_NOCONGESTION=0; KCP_SOCKBUF=8388608; KCP_SMUXBUF=8388608 ;;
+        4)
+            KCP_PROFILE="gaming"; KCP_CONN=2; KCP_MTU=1200; KCP_SNDWND=512; KCP_RCVWND=512
+            KCP_NODELAY=1; KCP_INTERVAL=10; KCP_RESEND=2; KCP_NOCONGESTION=1; KCP_SOCKBUF=4194304; KCP_SMUXBUF=4194304 ;;
+        *)
+            KCP_PROFILE="standard"; KCP_CONN=2; KCP_MTU=1350; KCP_SNDWND=1024; KCP_RCVWND=1024
+            KCP_NODELAY=0; KCP_INTERVAL=20; KCP_RESEND=2; KCP_NOCONGESTION=0; KCP_SOCKBUF=4194304; KCP_SMUXBUF=4194304 ;;
+    esac
 
     # Generate YAML config
     generate_config
@@ -896,40 +973,41 @@ generate_config() {
         fi
     }
 
-    # Ensure install directory exists
-    mkdir -p "$INSTALL_DIR" || { log_error "Failed to create $INSTALL_DIR"; return 1; }
+    generate_paqet_yaml() {
+        local target_file="$1"
+        local _y_iface _y_ip _y_mac _y_key _y_server _tcp_local_flags _tcp_remote_flags
+        _y_iface=$(_escape_yaml "${INTERFACE:-${IFACE:-eth0}}")
+        _y_ip=$(_escape_yaml "${LOCAL_IP:-}")
+        _y_mac=$(_escape_yaml "${GATEWAY_MAC:-${GW_MAC:-}}")
+        _y_key=$(_escape_yaml "${ENCRYPTION_KEY:-${KEY:-}}")
+        _tcp_local_flags=$(echo "${PAQET_TCP_LOCAL_FLAG:-PA}" | sed 's/,/", "/g; s/.*/["&"]/')
+        _tcp_remote_flags=$(echo "${PAQET_TCP_REMOTE_FLAG:-PA}" | sed 's/,/", "/g; s/.*/["&"]/')
 
-    local tmp_conf
-    tmp_conf=$(mktemp "$INSTALL_DIR/config.yaml.XXXXXXXX") || { log_error "Failed to create temp file"; return 1; }
-    # Set permissions on temp file before writing (fixes race condition)
-    chmod 600 "$tmp_conf" 2>/dev/null
+        local _conn="${KCP_CONN:-2}"
+        local _mtu="${KCP_MTU:-1350}"
+        local _sndwnd="${KCP_SNDWND:-1024}"
+        local _rcvwnd="${KCP_RCVWND:-1024}"
+        local _nodelay="${KCP_NODELAY:-0}"
+        local _interval="${KCP_INTERVAL:-20}"
+        local _resend="${KCP_RESEND:-2}"
+        local _nocongestion="${KCP_NOCONGESTION:-0}"
+        local _sockbuf="${KCP_SOCKBUF:-4194304}"
+        local _smuxbuf="${KCP_SMUXBUF:-4194304}"
 
-    (
-    umask 077
-    local _y_iface _y_ip _y_mac _y_key _y_server _y_port
-    _y_iface=$(_escape_yaml "$IFACE")
-    _y_ip=$(_escape_yaml "$LOCAL_IP")
-    _y_mac=$(_escape_yaml "$GW_MAC")
-    _y_key=$(_escape_yaml "$ENCRYPTION_KEY")
-    # Build TCP flags YAML array (default: ["PA"])
-    local _tcp_local_flags _tcp_remote_flags
-    _tcp_local_flags=$(echo "${PAQET_TCP_LOCAL_FLAG:-PA}" | sed 's/,/", "/g; s/.*/["&"]/')
-    _tcp_remote_flags=$(echo "${PAQET_TCP_REMOTE_FLAG:-PA}" | sed 's/,/", "/g; s/.*/["&"]/')
-
-    if [ "$ROLE" = "server" ]; then
-        cat > "$tmp_conf" << EOF
+        if [ "$ROLE" = "server" ]; then
+            cat > "$target_file" << EOF
 role: "server"
 
 log:
   level: "info"
 
 listen:
-  addr: ":${LISTEN_PORT}"
+  addr: ":${LISTEN_PORT:-8443}"
 
 network:
   interface: "${_y_iface}"
   ipv4:
-    addr: "${_y_ip}:${LISTEN_PORT}"
+    addr: "${_y_ip}:${LISTEN_PORT:-8443}"
     router_mac: "${_y_mac}"
   tcp:
     local_flag: ${_tcp_local_flags}
@@ -940,18 +1018,36 @@ transport:
   kcp:
     mode: "fast"
     key: "${_y_key}"
+    conn: ${_conn}
+    mtu: ${_mtu}
+    sndwnd: ${_sndwnd}
+    rcvwnd: ${_rcvwnd}
+    nodelay: ${_nodelay}
+    interval: ${_interval}
+    resend: ${_resend}
+    nocongestion: ${_nocongestion}
+    sockbuf: ${_sockbuf}
+    smuxbuf: ${_smuxbuf}
 EOF
-    else
-        local _rs_ip="${REMOTE_SERVER%:*}" _rs_port="${REMOTE_SERVER##*:}"
-        _y_server=$(_escape_yaml "$REMOTE_SERVER")
-        cat > "$tmp_conf" << EOF
+        else
+            _y_server=$(_escape_yaml "${REMOTE_SERVER:-}")
+            local _routing_section=""
+            if [ "${ROUTING_MODE:-socks5}" = "forward" ]; then
+                _routing_section="forward:
+  - listen: \"0.0.0.0:${FORWARD_PORT:-14000}\"
+    target: \"${FORWARD_TARGET:-127.0.0.1:80}\""
+            else
+                _routing_section="socks5:
+  - listen: \"127.0.0.1:${SOCKS_PORT:-1080}\""
+            fi
+
+            cat > "$target_file" << EOF
 role: "client"
 
 log:
   level: "info"
 
-socks5:
-  - listen: "127.0.0.1:${SOCKS_PORT}"
+${_routing_section}
 
 network:
   interface: "${_y_iface}"
@@ -970,8 +1066,31 @@ transport:
   kcp:
     mode: "fast"
     key: "${_y_key}"
+    conn: ${_conn}
+    mtu: ${_mtu}
+    sndwnd: ${_sndwnd}
+    rcvwnd: ${_rcvwnd}
+    nodelay: ${_nodelay}
+    interval: ${_interval}
+    resend: ${_resend}
+    nocongestion: ${_nocongestion}
+    sockbuf: ${_sockbuf}
+    smuxbuf: ${_smuxbuf}
 EOF
-    fi
+        fi
+    }
+
+    # Ensure install directory exists
+    mkdir -p "$INSTALL_DIR" || { log_error "Failed to create $INSTALL_DIR"; return 1; }
+
+    local tmp_conf
+    tmp_conf=$(mktemp "$INSTALL_DIR/config.yaml.XXXXXXXX") || { log_error "Failed to create temp file"; return 1; }
+    # Set permissions on temp file before writing (fixes race condition)
+    chmod 600 "$tmp_conf" 2>/dev/null
+
+    (
+    umask 077
+    generate_paqet_yaml "$tmp_conf"
     )
     if ! mv "$tmp_conf" "$INSTALL_DIR/config.yaml"; then
         log_error "Failed to save configuration file"
@@ -1007,6 +1126,22 @@ save_settings() {
                 TELEGRAM_WEEKLY_SUMMARY) _tg_weekly="$value" ;;
                 TELEGRAM_SERVER_LABEL) _tg_label="$value" ;;
                 TELEGRAM_START_HOUR) [[ "$value" =~ ^[0-9]+$ ]] && _tg_start_hour="$value" ;;
+                ROUTING_MODE) ROUTING_MODE="$value" ;;
+                FORWARD_PORT) FORWARD_PORT="$value" ;;
+                FORWARD_TARGET) FORWARD_TARGET="$value" ;;
+                KCP_PROFILE) KCP_PROFILE="$value" ;;
+                KCP_CONN) KCP_CONN="$value" ;;
+                KCP_MTU) KCP_MTU="$value" ;;
+                KCP_SNDWND) KCP_SNDWND="$value" ;;
+                KCP_RCVWND) KCP_RCVWND="$value" ;;
+                KCP_NODELAY) KCP_NODELAY="$value" ;;
+                KCP_INTERVAL) KCP_INTERVAL="$value" ;;
+                KCP_RESEND) KCP_RESEND="$value" ;;
+                KCP_NOCONGESTION) KCP_NOCONGESTION="$value" ;;
+                KCP_SOCKBUF) KCP_SOCKBUF="$value" ;;
+                KCP_SMUXBUF) KCP_SMUXBUF="$value" ;;
+                TURBO_ENABLED) TURBO_ENABLED="$value" ;;
+                WATCHDOG_ENABLED) WATCHDOG_ENABLED="$value" ;;
             esac
         done < <(grep '^[A-Z_][A-Z_0-9]*=' "$INSTALL_DIR/settings.conf")
     fi
@@ -1056,6 +1191,22 @@ TELEGRAM_DAILY_SUMMARY=${_tg_daily}
 TELEGRAM_WEEKLY_SUMMARY=${_tg_weekly}
 TELEGRAM_SERVER_LABEL="${_tg_label}"
 TELEGRAM_START_HOUR=${_tg_start_hour}
+ROUTING_MODE="${ROUTING_MODE:-socks5}"
+FORWARD_PORT="${FORWARD_PORT:-14000}"
+FORWARD_TARGET="${FORWARD_TARGET:-127.0.0.1:80}"
+KCP_PROFILE="${KCP_PROFILE:-standard}"
+KCP_CONN="${KCP_CONN:-2}"
+KCP_MTU="${KCP_MTU:-1350}"
+KCP_SNDWND="${KCP_SNDWND:-1024}"
+KCP_RCVWND="${KCP_RCVWND:-1024}"
+KCP_NODELAY="${KCP_NODELAY:-0}"
+KCP_INTERVAL="${KCP_INTERVAL:-20}"
+KCP_RESEND="${KCP_RESEND:-2}"
+KCP_NOCONGESTION="${KCP_NOCONGESTION:-0}"
+KCP_SOCKBUF="${KCP_SOCKBUF:-4194304}"
+KCP_SMUXBUF="${KCP_SMUXBUF:-4194304}"
+TURBO_ENABLED="${TURBO_ENABLED:-false}"
+WATCHDOG_ENABLED="${WATCHDOG_ENABLED:-false}"
 EOF
     )
     if ! mv "$_tmp" "$INSTALL_DIR/settings.conf"; then
@@ -1203,6 +1354,9 @@ persist_iptables_rules() {
         firewall-cmd --runtime-to-permanent 2>/dev/null || true
         return 0
     fi
+    if [ -x /etc/init.d/iptables ]; then
+        /etc/init.d/iptables save 2>/dev/null || true
+    fi
     if command -v netfilter-persistent &>/dev/null; then
         netfilter-persistent save 2>/dev/null || true
     elif command -v iptables-save &>/dev/null; then
@@ -1217,6 +1371,9 @@ persist_iptables_rules() {
             iptables-save > /etc/sysconfig/iptables 2>/dev/null || true
             command -v ip6tables-save &>/dev/null && ip6tables-save > /etc/sysconfig/ip6tables 2>/dev/null || true
         fi
+    fi
+    if command -v nft &>/dev/null && [ -f /etc/nftables.conf ]; then
+        nft list ruleset > /etc/nftables.conf 2>/dev/null || true
     fi
 }
 
@@ -2226,7 +2383,9 @@ create_management_script() {
 # https://github.com/SamNet-dev/paqctl
 #
 
-VERSION="1.0.1"
+export PATH="/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:$PATH"
+
+VERSION="1.1.0"
 
 # Pinned versions for stability (update these after testing new releases)
 PAQET_VERSION_PINNED="v1.0.0-alpha.20"
@@ -2374,6 +2533,22 @@ _load_settings() {
             TELEGRAM_WEEKLY_SUMMARY) TELEGRAM_WEEKLY_SUMMARY="$value" ;;
             TELEGRAM_SERVER_LABEL) TELEGRAM_SERVER_LABEL="$value" ;;
             TELEGRAM_START_HOUR) [[ "$value" =~ ^[0-9]+$ ]] && TELEGRAM_START_HOUR="$value" ;;
+            ROUTING_MODE) ROUTING_MODE="$value" ;;
+            FORWARD_PORT) FORWARD_PORT="$value" ;;
+            FORWARD_TARGET) FORWARD_TARGET="$value" ;;
+            KCP_PROFILE) KCP_PROFILE="$value" ;;
+            KCP_CONN) KCP_CONN="$value" ;;
+            KCP_MTU) KCP_MTU="$value" ;;
+            KCP_SNDWND) KCP_SNDWND="$value" ;;
+            KCP_RCVWND) KCP_RCVWND="$value" ;;
+            KCP_NODELAY) KCP_NODELAY="$value" ;;
+            KCP_INTERVAL) KCP_INTERVAL="$value" ;;
+            KCP_RESEND) KCP_RESEND="$value" ;;
+            KCP_NOCONGESTION) KCP_NOCONGESTION="$value" ;;
+            KCP_SOCKBUF) KCP_SOCKBUF="$value" ;;
+            KCP_SMUXBUF) KCP_SMUXBUF="$value" ;;
+            TURBO_ENABLED) TURBO_ENABLED="$value" ;;
+            WATCHDOG_ENABLED) WATCHDOG_ENABLED="$value" ;;
         esac
     done < <(grep '^[A-Z_][A-Z_0-9]*=' "$INSTALL_DIR/settings.conf")
 }
@@ -2528,6 +2703,22 @@ TELEGRAM_DAILY_SUMMARY=${_tg_daily}
 TELEGRAM_WEEKLY_SUMMARY=${_tg_weekly}
 TELEGRAM_SERVER_LABEL="${_tg_label}"
 TELEGRAM_START_HOUR=${_tg_start_hour}
+ROUTING_MODE="${ROUTING_MODE:-socks5}"
+FORWARD_PORT="${FORWARD_PORT:-14000}"
+FORWARD_TARGET="${FORWARD_TARGET:-127.0.0.1:80}"
+KCP_PROFILE="${KCP_PROFILE:-standard}"
+KCP_CONN="${KCP_CONN:-2}"
+KCP_MTU="${KCP_MTU:-1350}"
+KCP_SNDWND="${KCP_SNDWND:-1024}"
+KCP_RCVWND="${KCP_RCVWND:-1024}"
+KCP_NODELAY="${KCP_NODELAY:-0}"
+KCP_INTERVAL="${KCP_INTERVAL:-20}"
+KCP_RESEND="${KCP_RESEND:-2}"
+KCP_NOCONGESTION="${KCP_NOCONGESTION:-0}"
+KCP_SOCKBUF="${KCP_SOCKBUF:-4194304}"
+KCP_SMUXBUF="${KCP_SMUXBUF:-4194304}"
+TURBO_ENABLED="${TURBO_ENABLED:-false}"
+WATCHDOG_ENABLED="${WATCHDOG_ENABLED:-false}"
 SEOF
     )
     if ! mv "$_tmp" "$INSTALL_DIR/settings.conf"; then
@@ -2889,8 +3080,456 @@ is_gfk_running() {
     return 1
 }
 
+#═══════════════════════════════════════════════════════════════════════
+# Paqet v1.1.0 Performance Tuning & Supercharging
+#═══════════════════════════════════════════════════════════════════════
+
+_escape_yaml() {
+    local s="$1"
+    if [[ "$s" =~ [:\#\[\]{}\"\'\|\>\<\&\*\!\%\@\`] ]] || [[ "$s" =~ ^[[:space:]] ]] || [[ "$s" =~ [[:space:]]$ ]]; then
+        s="${s//\\/\\\\}"; s="${s//\"/\\\"}"; printf '"%s"' "$s"
+    else
+        printf '%s' "$s"
+    fi
+}
+
+generate_paqet_yaml() {
+    local target_file="$1"
+    local _y_iface _y_ip _y_mac _y_key _y_server _tcp_local_flags _tcp_remote_flags
+    _y_iface=$(_escape_yaml "${INTERFACE:-${IFACE:-eth0}}")
+    _y_ip=$(_escape_yaml "${LOCAL_IP:-}")
+    _y_mac=$(_escape_yaml "${GATEWAY_MAC:-${GW_MAC:-}}")
+    _y_key=$(_escape_yaml "${ENCRYPTION_KEY:-${KEY:-}}")
+    _tcp_local_flags=$(echo "${PAQET_TCP_LOCAL_FLAG:-PA}" | sed 's/,/", "/g; s/.*/["&"]/')
+    _tcp_remote_flags=$(echo "${PAQET_TCP_REMOTE_FLAG:-PA}" | sed 's/,/", "/g; s/.*/["&"]/')
+
+    local _conn="${KCP_CONN:-2}"
+    local _mtu="${KCP_MTU:-1350}"
+    local _sndwnd="${KCP_SNDWND:-1024}"
+    local _rcvwnd="${KCP_RCVWND:-1024}"
+    local _nodelay="${KCP_NODELAY:-0}"
+    local _interval="${KCP_INTERVAL:-20}"
+    local _resend="${KCP_RESEND:-2}"
+    local _nocongestion="${KCP_NOCONGESTION:-0}"
+    local _sockbuf="${KCP_SOCKBUF:-4194304}"
+    local _smuxbuf="${KCP_SMUXBUF:-4194304}"
+
+    if [ "$ROLE" = "server" ]; then
+        cat > "$target_file" << EOF
+role: "server"
+
+log:
+  level: "info"
+
+listen:
+  addr: ":${LISTEN_PORT:-8443}"
+
+network:
+  interface: "${_y_iface}"
+  ipv4:
+    addr: "${_y_ip}:${LISTEN_PORT:-8443}"
+    router_mac: "${_y_mac}"
+  tcp:
+    local_flag: ${_tcp_local_flags}
+    remote_flag: ${_tcp_remote_flags}
+
+transport:
+  protocol: "kcp"
+  kcp:
+    mode: "fast"
+    key: "${_y_key}"
+    conn: ${_conn}
+    mtu: ${_mtu}
+    sndwnd: ${_sndwnd}
+    rcvwnd: ${_rcvwnd}
+    nodelay: ${_nodelay}
+    interval: ${_interval}
+    resend: ${_resend}
+    nocongestion: ${_nocongestion}
+    sockbuf: ${_sockbuf}
+    smuxbuf: ${_smuxbuf}
+EOF
+    else
+        _y_server=$(_escape_yaml "${REMOTE_SERVER:-}")
+        local _routing_section=""
+        if [ "${ROUTING_MODE:-socks5}" = "forward" ]; then
+            _routing_section="forward:
+  - listen: \"0.0.0.0:${FORWARD_PORT:-14000}\"
+    target: \"${FORWARD_TARGET:-127.0.0.1:80}\""
+        else
+            _routing_section="socks5:
+  - listen: \"127.0.0.1:${SOCKS_PORT:-1080}\""
+        fi
+
+        cat > "$target_file" << EOF
+role: "client"
+
+log:
+  level: "info"
+
+${_routing_section}
+
+network:
+  interface: "${_y_iface}"
+  ipv4:
+    addr: "${_y_ip}:0"
+    router_mac: "${_y_mac}"
+  tcp:
+    local_flag: ${_tcp_local_flags}
+    remote_flag: ${_tcp_remote_flags}
+
+server:
+  addr: "${_y_server}"
+
+transport:
+  protocol: "kcp"
+  kcp:
+    mode: "fast"
+    key: "${_y_key}"
+    conn: ${_conn}
+    mtu: ${_mtu}
+    sndwnd: ${_sndwnd}
+    rcvwnd: ${_rcvwnd}
+    nodelay: ${_nodelay}
+    interval: ${_interval}
+    resend: ${_resend}
+    nocongestion: ${_nocongestion}
+    sockbuf: ${_sockbuf}
+    smuxbuf: ${_smuxbuf}
+EOF
+    fi
+}
+
+apply_turbo_mode() {
+    log_info "Applying OS Kernel Turbo Mode (BBR + 32MB Buffers)..."
+    local sysctl_conf="/etc/sysctl.d/99-paqctl-turbo.conf"
+    if [ ! -f "$sysctl_conf" ] && [ -f "/etc/sysctl.conf" ]; then
+        sysctl_conf="/etc/sysctl.conf"
+    fi
+    cat > /tmp/99-paqctl-turbo.conf << 'EOF'
+# Paqctl v1.1.0 Turbo Mode - High Performance Network Stack
+net.core.default_qdisc = fq
+net.ipv4.tcp_congestion_control = bbr
+net.core.rmem_max = 33554432
+net.core.wmem_max = 33554432
+net.core.rmem_default = 1048576
+net.core.wmem_default = 1048576
+net.core.optmem_max = 65536
+net.ipv4.tcp_rmem = 4096 1048576 33554432
+net.ipv4.tcp_wmem = 4096 65536 33554432
+net.ipv4.udp_rmem_min = 8192
+net.ipv4.udp_wmem_min = 8192
+net.core.netdev_max_backlog = 16384
+net.ipv4.tcp_max_syn_backlog = 8192
+net.ipv4.tcp_fastopen = 3
+net.ipv4.tcp_mtu_probing = 1
+fs.file-max = 2097152
+EOF
+    if [ -d "/etc/sysctl.d" ]; then
+        mv /tmp/99-paqctl-turbo.conf /etc/sysctl.d/99-paqctl-turbo.conf 2>/dev/null || true
+    else
+        cat /tmp/99-paqctl-turbo.conf >> /etc/sysctl.conf 2>/dev/null || true
+        rm -f /tmp/99-paqctl-turbo.conf
+    fi
+    sysctl --system &>/dev/null || sysctl -p &>/dev/null || true
+
+    local max_nofile="1048576"
+    if [ -f "/proc/sys/fs/nr_open" ]; then
+        local sys_nr_open=$(cat /proc/sys/fs/nr_open 2>/dev/null || echo "1048576")
+        if [ "$sys_nr_open" -lt 1048576 ] 2>/dev/null; then
+            max_nofile="$sys_nr_open"
+        fi
+    fi
+
+    if [ -f "/etc/systemd/system/paqctl.service" ] && command -v systemctl &>/dev/null && [ -d /run/systemd/system ]; then
+        mkdir -p /etc/systemd/system/paqctl.service.d 2>/dev/null || true
+        cat > /etc/systemd/system/paqctl.service.d/limits.conf << EOF
+[Service]
+LimitNOFILE=${max_nofile}
+LimitNPROC=51200
+EOF
+        systemctl daemon-reload 2>/dev/null || true
+        systemctl restart paqctl.service 2>/dev/null || true
+    else
+        mkdir -p /etc/security/limits.d 2>/dev/null || true
+        cat > /etc/security/limits.d/99-paqctl.conf << EOF
+* soft nofile ${max_nofile}
+* hard nofile ${max_nofile}
+root soft nofile ${max_nofile}
+root hard nofile ${max_nofile}
+EOF
+        ulimit -n "${max_nofile}" 2>/dev/null || true
+        restart_paqet 2>/dev/null || true
+    fi
+
+    TURBO_ENABLED="true"
+    save_settings 2>/dev/null || true
+    log_success "Kernel Turbo Mode enabled! BBR congestion control and 32MB buffers active."
+}
+
+remove_turbo_mode() {
+    log_info "Removing OS Kernel Turbo Mode..."
+    rm -f /etc/sysctl.d/99-paqctl-turbo.conf /etc/security/limits.d/99-paqctl.conf 2>/dev/null || true
+    rm -rf /etc/systemd/system/paqctl.service.d 2>/dev/null || true
+    if command -v systemctl &>/dev/null && [ -d /run/systemd/system ]; then
+        systemctl daemon-reload 2>/dev/null || true
+        systemctl restart paqctl.service 2>/dev/null || true
+    else
+        restart_paqet 2>/dev/null || true
+    fi
+    TURBO_ENABLED="false"
+    save_settings 2>/dev/null || true
+    log_success "Kernel Turbo Mode disabled."
+}
+
+manage_watchdog() {
+    local action="${1:-status}"
+    local timer_file="/etc/systemd/system/paqctl-watchdog.timer"
+    local service_file="/etc/systemd/system/paqctl-watchdog.service"
+    local cron_file="/etc/cron.d/paqctl-watchdog"
+
+    if ! command -v systemctl &>/dev/null || [ ! -d /run/systemd/system ]; then
+        case "$action" in
+            enable)
+                log_info "Enabling Self-Healing Watchdog via cron (non-systemd environment)..."
+                mkdir -p /etc/cron.d 2>/dev/null || true
+                echo "* * * * * root /usr/local/bin/paqctl watchdog check >/dev/null 2>&1" > "$cron_file"
+                chmod 644 "$cron_file" 2>/dev/null || true
+                WATCHDOG_ENABLED="true"
+                save_settings 2>/dev/null || true
+                log_success "Watchdog enabled via cron (* * * * *)! System will self-heal within 60s if service fails."
+                ;;
+            disable)
+                log_info "Disabling Self-Healing Watchdog..."
+                rm -f "$cron_file" 2>/dev/null || true
+                WATCHDOG_ENABLED="false"
+                save_settings 2>/dev/null || true
+                log_success "Watchdog disabled."
+                ;;
+            check)
+                if [ -f "$INSTALL_DIR/.stopped" ] || [ -f "/run/paqctl.stopped" ]; then
+                    return 0
+                fi
+                if ! is_running; then
+                    start_paqet &>/dev/null || true
+                    if [ "$TELEGRAM_ALERTS_ENABLED" = "true" ]; then
+                        send_telegram_alert "⚠️ *Paqctl Watchdog Alert*
+Service was down on \`${TELEGRAM_SERVER_LABEL:-$(hostname)}\`. Auto-recovery triggered!" &>/dev/null || true
+                    fi
+                fi
+                ;;
+            *)
+                if [ -f "$cron_file" ] || [ "${WATCHDOG_ENABLED}" = "true" ]; then
+                    echo -e "  Watchdog Status: ${GREEN}${BOLD}ACTIVE (Checking every 1m via cron)${NC}"
+                else
+                    echo -e "  Watchdog Status: ${RED}${BOLD}INACTIVE${NC}"
+                fi
+                ;;
+        esac
+        return 0
+    fi
+
+    case "$action" in
+        enable)
+            log_info "Enabling Self-Healing Watchdog (Auto-Recovery)..."
+            cat > "$service_file" << EOF
+[Unit]
+Description=Paqctl Watchdog Health Check
+After=network.target
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/bin/paqctl watchdog check
+EOF
+            cat > "$timer_file" << EOF
+[Unit]
+Description=Run Paqctl Watchdog every minute
+
+[Timer]
+OnBootSec=2min
+OnUnitActiveSec=1min
+Unit=paqctl-watchdog.service
+
+[Install]
+WantedBy=timers.target
+EOF
+            systemctl daemon-reload 2>/dev/null || true
+            systemctl enable paqctl-watchdog.timer &>/dev/null || true
+            systemctl start paqctl-watchdog.timer &>/dev/null || true
+            WATCHDOG_ENABLED="true"
+            save_settings 2>/dev/null || true
+            log_success "Watchdog enabled! System will self-heal within 60s if service fails."
+            ;;
+        disable)
+            log_info "Disabling Self-Healing Watchdog..."
+            systemctl stop paqctl-watchdog.timer &>/dev/null || true
+            systemctl disable paqctl-watchdog.timer &>/dev/null || true
+            rm -f "$timer_file" "$service_file" 2>/dev/null || true
+            systemctl daemon-reload 2>/dev/null || true
+            WATCHDOG_ENABLED="false"
+            save_settings 2>/dev/null || true
+            log_success "Watchdog disabled."
+            ;;
+        check)
+            if [ -f "$INSTALL_DIR/.stopped" ] || [ -f "/run/paqctl.stopped" ]; then
+                return 0
+            fi
+            if ! is_running; then
+                start_paqet &>/dev/null || true
+                if [ "$TELEGRAM_ALERTS_ENABLED" = "true" ]; then
+                    send_telegram_alert "⚠️ *Paqctl Watchdog Alert*
+Service was down on \`${TELEGRAM_SERVER_LABEL:-$(hostname)}\`. Auto-recovery triggered!" &>/dev/null || true
+                fi
+            fi
+            ;;
+        *)
+            if [ -f "$timer_file" ] && systemctl is-active paqctl-watchdog.timer &>/dev/null; then
+                echo -e "  Watchdog Status: ${GREEN}${BOLD}ACTIVE (Checking every 1m)${NC}"
+            else
+                echo -e "  Watchdog Status: ${RED}${BOLD}INACTIVE${NC}"
+            fi
+            ;;
+    esac
+}
+
+detect_optimal_mtu() {
+    echo ""
+    log_info "Running Smart MTU Auto-Discovery..."
+    local target="8.8.8.8"
+    if [ "$ROLE" = "client" ] && [ -n "$REMOTE_SERVER" ]; then
+        target="${REMOTE_SERVER%:*}"
+    fi
+    echo -e "  ${DIM}Testing path MTU to ${target}...${NC}"
+
+    local ping_flag=""
+    if ping -c 1 -W 1 -M do -s 64 127.0.0.1 &>/dev/null; then
+        ping_flag="-M do"
+    elif ping -c 1 -W 1 -D -s 64 127.0.0.1 &>/dev/null; then
+        ping_flag="-D"
+    fi
+
+    local mtu=1460
+    local found=0
+    if ping -c 1 -W 1 -s 64 "$target" &>/dev/null || ping -c 1 -W 1 127.0.0.1 &>/dev/null; then
+        while [ $mtu -ge 1200 ]; do
+            if ping -c 1 -W 1 ${ping_flag} -s $((mtu - 28)) "$target" &>/dev/null; then
+                found=$mtu
+                break
+            fi
+            mtu=$((mtu - 20))
+        done
+    fi
+
+    echo ""
+    if [ "$found" -eq 0 ]; then
+        log_warn "ICMP ping probes restricted or blocked by network/container firewall. Defaulting to safe MTU: 1350"
+        found=1350
+    else
+        log_success "Optimal path MTU detected: ${found}"
+    fi
+    echo -e "  ${DIM}(Accounted for IP/UDP headers without packet fragmentation)${NC}"
+    KCP_MTU="$found"
+    save_settings 2>/dev/null || true
+    return 0
+}
+
+select_performance_profile() {
+    echo ""
+    echo "===================================================================="
+    echo "  PERFORMANCE PROFILE SELECTION"
+    echo "===================================================================="
+    echo "  Note: Select a profile that matches your network link quality."
+    echo ""
+    echo "  1) Standard / Balanced [DEFAULT - conn: 2, mtu: 1350]"
+    echo "     • Smart default for general internet uplinks and everyday usage."
+    echo ""
+    echo "  2) High-Loss / Restricted Uplink [conn: 4, wnd: 1024, mtu: 1300]"
+    echo "     • Optimized for restricted networks, severe packet loss, or heavy DPI."
+    echo ""
+    echo "  3) High-Throughput / CDN Tunnel [conn: 8, wnd: 2048, sockbuf: 8MB]"
+    echo "     • Maximized concurrency for multi-layer CDN routing or Gigabit fiber."
+    echo ""
+    echo "  4) Low-Latency / Gaming & VOIP [conn: 2, mtu: 1200, nodelay: 1]"
+    echo "     • Ultra-fast response times for real-time applications."
+    echo "===================================================================="
+    echo ""
+    read -p "  Select Profile [1-4, default: 1]: " p_choice < /dev/tty || true
+    p_choice="${p_choice:-1}"
+    case "$p_choice" in
+        2)
+            KCP_PROFILE="highloss"; KCP_CONN=4; KCP_MTU=1300; KCP_SNDWND=1024; KCP_RCVWND=1024
+            KCP_NODELAY=0; KCP_INTERVAL=20; KCP_RESEND=2; KCP_NOCONGESTION=0; KCP_SOCKBUF=4194304; KCP_SMUXBUF=4194304 ;;
+        3)
+            KCP_PROFILE="cdntunnel"; KCP_CONN=8; KCP_MTU=1400; KCP_SNDWND=2048; KCP_RCVWND=2048
+            KCP_NODELAY=0; KCP_INTERVAL=20; KCP_RESEND=2; KCP_NOCONGESTION=0; KCP_SOCKBUF=8388608; KCP_SMUXBUF=8388608 ;;
+        4)
+            KCP_PROFILE="gaming"; KCP_CONN=2; KCP_MTU=1200; KCP_SNDWND=512; KCP_RCVWND=512
+            KCP_NODELAY=1; KCP_INTERVAL=10; KCP_RESEND=2; KCP_NOCONGESTION=1; KCP_SOCKBUF=4194304; KCP_SMUXBUF=4194304 ;;
+        *)
+            KCP_PROFILE="standard"; KCP_CONN=2; KCP_MTU=1350; KCP_SNDWND=1024; KCP_RCVWND=1024
+            KCP_NODELAY=0; KCP_INTERVAL=20; KCP_RESEND=2; KCP_NOCONGESTION=0; KCP_SOCKBUF=4194304; KCP_SMUXBUF=4194304 ;;
+    esac
+    save_settings 2>/dev/null || true
+}
+
+tune_menu() {
+    while true; do
+        echo ""
+        echo -e "${CYAN}═══════════════════════════════════════════════════════════════${NC}"
+        echo -e "${BOLD}  PERFORMANCE & SUPERCHARGING MENU (v1.1.0)${NC}"
+        echo -e "${CYAN}═══════════════════════════════════════════════════════════════${NC}"
+        echo ""
+        echo -e "  Current Profile : ${GREEN}${BOLD}${KCP_PROFILE:-standard}${NC} (conn: ${KCP_CONN:-2}, mtu: ${KCP_MTU:-1350})"
+        echo -e "  Kernel Turbo Mode: $( [ "${TURBO_ENABLED}" = "true" ] && echo -e "${GREEN}${BOLD}ENABLED (BBR + 32MB)${NC}" || echo -e "${RED}DISABLED${NC}" )"
+        echo -e "  Watchdog Service : $( [ "${WATCHDOG_ENABLED}" = "true" ] && echo -e "${GREEN}${BOLD}ENABLED (1m Auto-Heal)${NC}" || echo -e "${RED}DISABLED${NC}" )"
+        echo ""
+        echo "  1. Select Performance Profile (Standard/High-Loss/CDN/Gaming)"
+        echo "  2. Run Smart MTU Auto-Discovery"
+        echo "  3. Toggle OS Kernel Turbo Mode (BBR + 32MB Buffers)"
+        echo "  4. Toggle Self-Healing Watchdog Service"
+        echo "  5. Apply & Restart Service with Current Tuning"
+        echo "  b. Back to Main Menu"
+        echo ""
+        read -p "  Choice [1-5/b]: " t_choice < /dev/tty || true
+        case "$t_choice" in
+            1)
+                select_performance_profile
+                generate_paqet_yaml "$INSTALL_DIR/config.yaml"
+                log_success "Profile applied to config.yaml"
+                ;;
+            2)
+                detect_optimal_mtu
+                generate_paqet_yaml "$INSTALL_DIR/config.yaml"
+                log_success "Optimal MTU applied to config.yaml"
+                ;;
+            3)
+                if [ "${TURBO_ENABLED}" = "true" ]; then
+                    remove_turbo_mode
+                else
+                    apply_turbo_mode
+                fi
+                ;;
+            4)
+                if [ "${WATCHDOG_ENABLED}" = "true" ]; then
+                    manage_watchdog disable
+                else
+                    manage_watchdog enable
+                fi
+                ;;
+            5)
+                generate_paqet_yaml "$INSTALL_DIR/config.yaml"
+                restart_paqet
+                log_success "Service restarted with updated tuning!"
+                ;;
+            b|B) break ;;
+            *) echo -e "  ${RED}Invalid choice${NC}" ;;
+        esac
+    done
+}
+
 # Start paqet backend only
 start_paqet_backend() {
+    rm -f "$INSTALL_DIR/.stopped" /run/paqctl.stopped 2>/dev/null || true
     if is_paqet_running; then
         log_warn "paqet is already running"
         return 0
@@ -2970,34 +3609,44 @@ EOFCFG
             read -p "  Key: " input < /dev/tty || true
             [ -n "$input" ] && _key="$input"
 
-            echo -e "${BOLD}SOCKS5 Port${NC} [1080]:"
-            read -p "  Port: " input < /dev/tty || true
-            local _socks="${input:-1080}"
+            echo ""
+            echo "===================================================================="
+            echo "  ROUTING MODE SELECTION"
+            echo "===================================================================="
+            echo "  Note: Choose how traffic is handled across your proxy tunnel."
+            echo ""
+            echo "  1) SOCKS5 Proxy Mode [DEFAULT - Recommended for most users]"
+            echo "     • Creates a standard all-in-one SOCKS5 proxy on port 1080."
+            echo "     • Best for direct browser browsing, Telegram, and general apps."
+            echo ""
+            echo "  2) Direct Port Forwarding Mode [For advanced server-to-server setups]"
+            echo "     • Forwards raw TCP/UDP traffic directly without SOCKS5 overhead."
+            echo "     • Best for connecting backend Xray/sing-box panels or CDN tunnels."
+            echo "===================================================================="
+            echo ""
+            read -p "  Select Routing Mode [1-2, default: 1]: " r_choice < /dev/tty || true
+            r_choice="${r_choice:-1}"
+            if [ "$r_choice" = "2" ]; then
+                ROUTING_MODE="forward"
+                echo -e "${BOLD}Local Forward Listen Port${NC} [14000]:"
+                read -p "  Port: " input < /dev/tty || true; FORWARD_PORT="${input:-14000}"
+                echo -e "${BOLD}Target Address (IP:PORT)${NC} [127.0.0.1:80]:"
+                read -p "  Target: " input < /dev/tty || true; FORWARD_TARGET="${input:-127.0.0.1:80}"
+                SOCKS_PORT=1080
+            else
+                ROUTING_MODE="socks5"
+                echo -e "${BOLD}SOCKS5 Port${NC} [1080]:"
+                read -p "  Port: " input < /dev/tty || true
+                SOCKS_PORT="${input:-1080}"
+            fi
 
             REMOTE_SERVER="$_server"
-            SOCKS_PORT="$_socks"
             ENCRYPTION_KEY="$_key"
-
-            cat > "$INSTALL_DIR/config.yaml" << EOFCFG
-role: "client"
-log:
-  level: "info"
-socks5:
-  - listen: "127.0.0.1:${_socks}"
-network:
-  interface: "${_iface}"
-  ipv4:
-    addr: "${_local_ip}:0"
-    router_mac: "${_gw_mac}"
-server:
-  addr: "${_server}"
-transport:
-  protocol: "kcp"
-  kcp:
-    mode: "fast"
-    key: "${_key}"
-EOFCFG
         fi
+
+        select_performance_profile
+
+        INTERFACE="$_iface" LOCAL_IP="$_local_ip" GATEWAY_MAC="$_gw_mac" generate_paqet_yaml "$INSTALL_DIR/config.yaml"
 
         if [ ! -f "$INSTALL_DIR/config.yaml" ]; then
             log_error "Failed to write config.yaml"
@@ -3035,6 +3684,7 @@ EOFCFG
 
 # Stop paqet backend only
 stop_paqet_backend() {
+    touch "$INSTALL_DIR/.stopped" /run/paqctl.stopped 2>/dev/null || true
     if ! is_paqet_running; then
         log_warn "paqet is not running"
         return 0
@@ -3072,6 +3722,7 @@ stop_paqet_backend() {
 
 # Start GFK backend only
 start_gfk_backend() {
+    rm -f "$INSTALL_DIR/.stopped" /run/paqctl.stopped 2>/dev/null || true
     if is_gfk_running; then
         log_warn "gfw-knocker is already running"
         return 0
@@ -3127,6 +3778,7 @@ start_gfk_backend() {
 
 # Stop GFK backend only
 stop_gfk_backend() {
+    touch "$INSTALL_DIR/.stopped" /run/paqctl.stopped 2>/dev/null || true
     if ! is_gfk_running; then
         log_warn "gfw-knocker is not running"
         return 0
@@ -3168,6 +3820,7 @@ stop_gfk_backend() {
 }
 
 start_paqet() {
+    rm -f "$INSTALL_DIR/.stopped" /run/paqctl.stopped 2>/dev/null || true
     # Check which backends are installed
     local paqet_installed=false gfk_installed=false
     [ -f "$INSTALL_DIR/bin/paqet" ] && paqet_installed=true
@@ -3240,6 +3893,7 @@ start_paqet() {
 }
 
 stop_paqet() {
+    touch "$INSTALL_DIR/.stopped" /run/paqctl.stopped 2>/dev/null || true
     # Check which backends are installed
     local paqet_installed=false gfk_installed=false
     [ -f "$INSTALL_DIR/bin/paqet" ] && paqet_installed=true
@@ -3370,20 +4024,20 @@ _apply_firewall() {
             local TAG="paqctl"
             modprobe iptable_raw 2>/dev/null || true
             iptables -t raw -C PREROUTING -p tcp --dport "$vio_port" -m comment --comment "$TAG" -j NOTRACK 2>/dev/null || \
-                iptables -t raw -A PREROUTING -p tcp --dport "$vio_port" -m comment --comment "$TAG" -j NOTRACK 2>/dev/null || true
+                iptables -t raw -I PREROUTING 1 -p tcp --dport "$vio_port" -m comment --comment "$TAG" -j NOTRACK 2>/dev/null || true
             iptables -t raw -C OUTPUT -p tcp --sport "$vio_port" -m comment --comment "$TAG" -j NOTRACK 2>/dev/null || \
-                iptables -t raw -A OUTPUT -p tcp --sport "$vio_port" -m comment --comment "$TAG" -j NOTRACK 2>/dev/null || true
+                iptables -t raw -I OUTPUT 1 -p tcp --sport "$vio_port" -m comment --comment "$TAG" -j NOTRACK 2>/dev/null || true
             iptables -C INPUT -p tcp --dport "$vio_port" -m comment --comment "$TAG" -j DROP 2>/dev/null || \
-                iptables -A INPUT -p tcp --dport "$vio_port" -m comment --comment "$TAG" -j DROP 2>/dev/null || \
+                iptables -I INPUT 1 -p tcp --dport "$vio_port" -m comment --comment "$TAG" -j DROP 2>/dev/null || \
                 echo -e "${YELLOW}[!]${NC} Failed to add VIO port DROP rule" >&2
             iptables -C OUTPUT -p tcp --sport "$vio_port" --tcp-flags RST RST -m comment --comment "$TAG" -j DROP 2>/dev/null || \
-                iptables -A OUTPUT -p tcp --sport "$vio_port" --tcp-flags RST RST -m comment --comment "$TAG" -j DROP 2>/dev/null || \
+                iptables -I OUTPUT 1 -p tcp --sport "$vio_port" --tcp-flags RST RST -m comment --comment "$TAG" -j DROP 2>/dev/null || \
                 echo -e "${YELLOW}[!]${NC} Failed to add RST DROP rule" >&2
             if command -v ip6tables &>/dev/null; then
                 ip6tables -C INPUT -p tcp --dport "$vio_port" -m comment --comment "$TAG" -j DROP 2>/dev/null || \
-                    ip6tables -A INPUT -p tcp --dport "$vio_port" -m comment --comment "$TAG" -j DROP 2>/dev/null || true
+                    ip6tables -I INPUT 1 -p tcp --dport "$vio_port" -m comment --comment "$TAG" -j DROP 2>/dev/null || true
                 ip6tables -C OUTPUT -p tcp --sport "$vio_port" --tcp-flags RST RST -m comment --comment "$TAG" -j DROP 2>/dev/null || \
-                    ip6tables -A OUTPUT -p tcp --sport "$vio_port" --tcp-flags RST RST -m comment --comment "$TAG" -j DROP 2>/dev/null || true
+                    ip6tables -I OUTPUT 1 -p tcp --sport "$vio_port" --tcp-flags RST RST -m comment --comment "$TAG" -j DROP 2>/dev/null || true
             fi
         fi
         return 0
@@ -3413,21 +4067,21 @@ _apply_firewall() {
         modprobe iptable_raw 2>/dev/null || true
         modprobe iptable_mangle 2>/dev/null || true
         iptables -t raw -C PREROUTING -p tcp --dport "$port" -m comment --comment "$TAG" -j NOTRACK 2>/dev/null || \
-            iptables -t raw -A PREROUTING -p tcp --dport "$port" -m comment --comment "$TAG" -j NOTRACK 2>/dev/null || \
+            iptables -t raw -I PREROUTING 1 -p tcp --dport "$port" -m comment --comment "$TAG" -j NOTRACK 2>/dev/null || \
             echo -e "${YELLOW}[!]${NC} Failed to add PREROUTING NOTRACK rule" >&2
         iptables -t raw -C OUTPUT -p tcp --sport "$port" -m comment --comment "$TAG" -j NOTRACK 2>/dev/null || \
-            iptables -t raw -A OUTPUT -p tcp --sport "$port" -m comment --comment "$TAG" -j NOTRACK 2>/dev/null || \
+            iptables -t raw -I OUTPUT 1 -p tcp --sport "$port" -m comment --comment "$TAG" -j NOTRACK 2>/dev/null || \
             echo -e "${YELLOW}[!]${NC} Failed to add OUTPUT NOTRACK rule" >&2
         iptables -t mangle -C OUTPUT -p tcp --sport "$port" -m comment --comment "$TAG" --tcp-flags RST RST -j DROP 2>/dev/null || \
-            iptables -t mangle -A OUTPUT -p tcp --sport "$port" -m comment --comment "$TAG" --tcp-flags RST RST -j DROP 2>/dev/null || \
+            iptables -t mangle -I OUTPUT 1 -p tcp --sport "$port" -m comment --comment "$TAG" --tcp-flags RST RST -j DROP 2>/dev/null || \
             echo -e "${YELLOW}[!]${NC} Failed to add RST DROP rule" >&2
         if command -v ip6tables &>/dev/null; then
             ip6tables -t raw -C PREROUTING -p tcp --dport "$port" -m comment --comment "$TAG" -j NOTRACK 2>/dev/null || \
-                ip6tables -t raw -A PREROUTING -p tcp --dport "$port" -m comment --comment "$TAG" -j NOTRACK 2>/dev/null || true
+                ip6tables -t raw -I PREROUTING 1 -p tcp --dport "$port" -m comment --comment "$TAG" -j NOTRACK 2>/dev/null || true
             ip6tables -t raw -C OUTPUT -p tcp --sport "$port" -m comment --comment "$TAG" -j NOTRACK 2>/dev/null || \
-                ip6tables -t raw -A OUTPUT -p tcp --sport "$port" -m comment --comment "$TAG" -j NOTRACK 2>/dev/null || true
+                ip6tables -t raw -I OUTPUT 1 -p tcp --sport "$port" -m comment --comment "$TAG" -j NOTRACK 2>/dev/null || true
             ip6tables -t mangle -C OUTPUT -p tcp --sport "$port" -m comment --comment "$TAG" --tcp-flags RST RST -j DROP 2>/dev/null || \
-                ip6tables -t mangle -A OUTPUT -p tcp --sport "$port" -m comment --comment "$TAG" --tcp-flags RST RST -j DROP 2>/dev/null || true
+                ip6tables -t mangle -I OUTPUT 1 -p tcp --sport "$port" -m comment --comment "$TAG" --tcp-flags RST RST -j DROP 2>/dev/null || true
         fi
     fi
 }
@@ -3576,25 +4230,7 @@ _remove_all_paqctl_firewall_rules() {
 }
 
 _persist_firewall() {
-    if _is_firewalld_active; then
-        firewall-cmd --runtime-to-permanent 2>/dev/null || true
-        return 0
-    fi
-    if command -v netfilter-persistent &>/dev/null; then
-        netfilter-persistent save 2>/dev/null || true
-    elif command -v iptables-save &>/dev/null; then
-        if [ -d /etc/iptables ]; then
-            iptables-save > /etc/iptables/rules.v4 2>/dev/null || true
-            command -v ip6tables-save &>/dev/null && ip6tables-save > /etc/iptables/rules.v6 2>/dev/null || true
-        elif [ -f /etc/debian_version ] && [ ! -d /etc/iptables ]; then
-            mkdir -p /etc/iptables
-            iptables-save > /etc/iptables/rules.v4 2>/dev/null || true
-            command -v ip6tables-save &>/dev/null && ip6tables-save > /etc/iptables/rules.v6 2>/dev/null || true
-        elif [ -d /etc/sysconfig ]; then
-            iptables-save > /etc/sysconfig/iptables 2>/dev/null || true
-            command -v ip6tables-save &>/dev/null && ip6tables-save > /etc/sysconfig/ip6tables 2>/dev/null || true
-        fi
-    fi
+    persist_iptables_rules
 }
 
 #═══════════════════════════════════════════════════════════════════════
@@ -5283,13 +5919,17 @@ export_config_string() {
         echo -e "  ${GREEN}gfk://${b64}${NC}"
     else
         local port="${LISTEN_PORT:-8443}"
+        if [[ "$_ip" =~ ^([0-9a-zA-Z\.\-_]+|\[[0-9a-fA-F:]+\]):([0-9]+)$ ]]; then
+            port="${BASH_REMATCH[2]}"
+            _ip="${BASH_REMATCH[1]}"
+        fi
         local key="${ENCRYPTION_KEY}"
         if [ -z "$key" ] && [ -f "$INSTALL_DIR/config.yaml" ]; then
             key=$(grep -E "^key:" "$INSTALL_DIR/config.yaml" 2>/dev/null | awk '{print $2}' | tr -d '"' || echo "")
         fi
-        local raw_str="paqet|${_ip}|${port}|${key}|${SOCKS_PORT:-1080}"
+        local raw_str="paqet|${_ip}|${port}|${key}|${SOCKS_PORT:-1080}|${ROUTING_MODE:-socks5}|${FORWARD_PORT:-14000}|${FORWARD_TARGET:-127.0.0.1:80}|${KCP_PROFILE:-standard}"
         local b64=$(echo -n "$raw_str" | base64 | tr -d '\r\n')
-        echo -e "  ${BOLD}Shareable Paqet Client String:${NC}"
+        echo -e "  ${BOLD}Shareable Paqet Client String (v2 format):${NC}"
         echo -e "  ${GREEN}paqet://${b64}${NC}"
     fi
     echo ""
@@ -5308,7 +5948,7 @@ import_config_string() {
     
     local proto="${input_str%%://*}"
     local b64="${input_str#*://}"
-    local decoded=$(echo "$b64" | base64 -d 2>/dev/null || echo "")
+    local decoded=$(echo "$b64" | base64 -d 2>/dev/null || echo "$b64" | base64 -D 2>/dev/null || echo "")
     
     if [ -z "$decoded" ]; then
         log_error "Invalid or corrupted base64 config string."
@@ -5316,28 +5956,59 @@ import_config_string() {
     fi
     
     if [ "$proto" = "paqet" ]; then
-        IFS='|' read -r _p _ip _port _key _socks <<< "$decoded"
-        if [ "$_p" != "paqet" ] || [ -z "$_ip" ] || [ -z "$_port" ] || [ -z "$_key" ]; then
+        local _ip _port _key _socks _rmode _fport _ftgt _profile
+        local p1 p2 p3 p4 p5 p6 p7 p8
+        IFS='|' read -r _p p1 p2 p3 p4 p5 p6 p7 p8 <<< "$decoded"
+        if [ "$_p" != "paqet" ] || [ -z "$p1" ] || [ -z "$p2" ]; then
             log_error "Invalid paqet string format."
             return 1
         fi
+        if [[ "$p1" =~ ^([0-9a-zA-Z\.\-_]+|\[[0-9a-fA-F:]+\]):([0-9]+)$ ]]; then
+            # 8-part combined format: paqet|IP:PORT|KEY|SOCKS|RMODE|FPORT|FTGT|PROF
+            _ip="${BASH_REMATCH[1]}"
+            _port="${BASH_REMATCH[2]}"
+            _key="$p2"
+            _socks="${p3:-1080}"
+            _rmode="${p4:-socks5}"
+            _fport="${p5:-14000}"
+            _ftgt="${p6:-127.0.0.1:80}"
+            _profile="${p7:-standard}"
+        else
+            # 9-part separate format: paqet|IP|PORT|KEY|SOCKS|RMODE|FPORT|FTGT|PROF
+            _ip="$p1"
+            _port="$p2"
+            _key="$p3"
+            _socks="${p4:-1080}"
+            _rmode="${p5:-socks5}"
+            _fport="${p6:-14000}"
+            _ftgt="${p7:-127.0.0.1:80}"
+            _profile="${p8:-standard}"
+        fi
         log_info "Importing Paqet Client Config (Server: $_ip:$_port)..."
-        _safe_update_setting "REMOTE_SERVER" "$_ip" "$INSTALL_DIR/settings.conf"
+        _safe_update_setting "REMOTE_SERVER" "$_ip:$_port" "$INSTALL_DIR/settings.conf"
         _safe_update_setting "LISTEN_PORT" "$_port" "$INSTALL_DIR/settings.conf"
         _safe_update_setting "ENCRYPTION_KEY" "$_key" "$INSTALL_DIR/settings.conf"
         [ -n "$_socks" ] && _safe_update_setting "SOCKS_PORT" "$_socks" "$INSTALL_DIR/settings.conf"
-        if [ ! -f "$INSTALL_DIR/config.yaml" ]; then
-            cat > "$INSTALL_DIR/config.yaml" << EOF
-role: "client"
-server: "$_ip:$_port"
-listen: "127.0.0.1:1080"
-key: "$_key"
-log_level: "info"
-EOF
-        else
-            sed -i "s/^server:.*/server: \"$_ip:$_port\"/" "$INSTALL_DIR/config.yaml" 2>/dev/null || true
-            sed -i "s/^key:.*/key: \"$_key\"/" "$INSTALL_DIR/config.yaml" 2>/dev/null || true
+        [ -n "$_rmode" ] && _safe_update_setting "ROUTING_MODE" "$_rmode" "$INSTALL_DIR/settings.conf"
+        [ -n "$_fport" ] && _safe_update_setting "FORWARD_PORT" "$_fport" "$INSTALL_DIR/settings.conf"
+        [ -n "$_ftgt" ] && _safe_update_setting "FORWARD_TARGET" "$_ftgt" "$INSTALL_DIR/settings.conf"
+        [ -n "$_profile" ] && _safe_update_setting "KCP_PROFILE" "$_profile" "$INSTALL_DIR/settings.conf"
+
+        REMOTE_SERVER="$_ip:$_port"; LISTEN_PORT="$_port"; ENCRYPTION_KEY="$_key"
+        [ -n "$_socks" ] && SOCKS_PORT="$_socks"
+        [ -n "$_rmode" ] && ROUTING_MODE="$_rmode"
+        [ -n "$_fport" ] && FORWARD_PORT="$_fport"
+        [ -n "$_ftgt" ] && FORWARD_TARGET="$_ftgt"
+        [ -n "$_profile" ] && KCP_PROFILE="$_profile"
+
+        if [ -z "$INTERFACE" ] || [ -z "$LOCAL_IP" ] || [ -z "$GATEWAY_MAC" ]; then
+            detect_network
+            [ -n "$DETECTED_IFACE" ] && INTERFACE="$DETECTED_IFACE" && _safe_update_setting "INTERFACE" "$INTERFACE" "$INSTALL_DIR/settings.conf"
+            [ -n "$DETECTED_IP" ] && LOCAL_IP="$DETECTED_IP" && _safe_update_setting "LOCAL_IP" "$LOCAL_IP" "$INSTALL_DIR/settings.conf"
+            [ -n "$DETECTED_GW_MAC" ] && GATEWAY_MAC="$DETECTED_GW_MAC" && _safe_update_setting "GATEWAY_MAC" "$GATEWAY_MAC" "$INSTALL_DIR/settings.conf"
         fi
+
+        generate_paqet_yaml "$INSTALL_DIR/config.yaml"
         log_success "Paqet client configuration imported! Restarting service..."
         stop_paqet_backend || true; start_paqet_backend || true
     elif [ "$proto" = "gfk" ]; then
@@ -5666,19 +6337,29 @@ send_message() {
     return 1
 }
 
-is_running() {
-    if [ "$BACKEND" = "gfw-knocker" ]; then
-        pgrep -f "mainserver.py|mainclient.py|gfk-client.sh" &>/dev/null
-    else
-        pgrep -f "paqet run -c" &>/dev/null
-    fi
-}
-
 get_main_pid() {
+    if [ -f /run/paqctl.pid ]; then
+        local _pid=$(cat /run/paqctl.pid 2>/dev/null)
+        if [[ "$_pid" =~ ^[0-9]+$ ]] && kill -0 "$_pid" 2>/dev/null; then
+            echo "$_pid"
+            return 0
+        fi
+    fi
+    if command -v systemctl &>/dev/null && [ -d /run/systemd/system ] && systemctl is-active paqctl.service &>/dev/null; then
+        local _pid=$(systemctl show -p MainPID paqctl.service 2>/dev/null | cut -d= -f2)
+        if [[ "$_pid" =~ ^[0-9]+$ ]] && [ "$_pid" -gt 0 ]; then
+            echo "$_pid"
+            return 0
+        fi
+    fi
     if [ "$BACKEND" = "gfw-knocker" ]; then
-        pgrep -f "mainserver.py" 2>/dev/null | head -1
+        if [ "$ROLE" = "server" ]; then
+            pgrep -f "${GFK_DIR}/mainserver.py" 2>/dev/null | head -1
+        else
+            pgrep -f "${GFK_DIR}/mainclient.py|${INSTALL_DIR}/bin/gfk-client.sh" 2>/dev/null | head -1
+        fi
     else
-        pgrep -f "paqet run -c" 2>/dev/null | head -1
+        pgrep -f "${INSTALL_DIR}/bin/paqet run -c ${INSTALL_DIR}/config.yaml" 2>/dev/null | head -1
     fi
 }
 
@@ -6347,14 +7028,42 @@ _install_paqet_components() {
             read -p "  Key: " input < /dev/tty || true
             [ -n "$input" ] && _key="$input"
 
-            echo -e "${BOLD}SOCKS5 Port${NC} [1080]:"
-            read -p "  Port: " input < /dev/tty || true
-            local _socks="${input:-1080}"
+            echo ""
+            echo "===================================================================="
+            echo "  ROUTING MODE SELECTION"
+            echo "===================================================================="
+            echo "  Note: Choose how traffic is handled across your proxy tunnel."
+            echo ""
+            echo "  1) SOCKS5 Proxy Mode [DEFAULT - Recommended for most users]"
+            echo "     • Creates a standard all-in-one SOCKS5 proxy on port 1080."
+            echo "     • Best for direct browser browsing, Telegram, and general apps."
+            echo ""
+            echo "  2) Direct Port Forwarding Mode [For advanced server-to-server setups]"
+            echo "     • Forwards raw TCP/UDP traffic directly without SOCKS5 overhead."
+            echo "     • Best for connecting backend Xray/sing-box panels or CDN tunnels."
+            echo "===================================================================="
+            echo ""
+            read -p "  Select Routing Mode [1-2, default: 1]: " r_choice < /dev/tty || true
+            r_choice="${r_choice:-1}"
+            if [ "$r_choice" = "2" ]; then
+                ROUTING_MODE="forward"
+                echo -e "${BOLD}Local Forward Listen Port${NC} [14000]:"
+                read -p "  Port: " input < /dev/tty || true; FORWARD_PORT="${input:-14000}"
+                echo -e "${BOLD}Target Address (IP:PORT)${NC} [127.0.0.1:80]:"
+                read -p "  Target: " input < /dev/tty || true; FORWARD_TARGET="${input:-127.0.0.1:80}"
+                SOCKS_PORT=1080
+            else
+                ROUTING_MODE="socks5"
+                echo -e "${BOLD}SOCKS5 Port${NC} [1080]:"
+                read -p "  Port: " input < /dev/tty || true
+                SOCKS_PORT="${input:-1080}"
+            fi
 
             REMOTE_SERVER="$_server"
-            SOCKS_PORT="$_socks"
             ENCRYPTION_KEY="$_key"
         fi
+
+        select_performance_profile
 
         # Validate required fields
         if [ -z "$_iface" ] || [ -z "$_local_ip" ] || [ -z "$_gw_mac" ]; then
@@ -6366,74 +7075,11 @@ _install_paqet_components() {
             return 1
         fi
 
-        # Helper to escape YAML values
-        _escape_yaml_val() {
-            local s="$1"
-            if [[ "$s" =~ [:\#\[\]{}\"\'\|\>\<\&\*\!\%\@\`] ]] || [[ "$s" =~ ^[[:space:]] ]] || [[ "$s" =~ [[:space:]]$ ]]; then
-                s="${s//\\/\\\\}"; s="${s//\"/\\\"}"; printf '"%s"' "$s"
-            else
-                printf '%s' "$s"
-            fi
-        }
-
-        local _y_iface _y_ip _y_mac _y_key
-        _y_iface=$(_escape_yaml_val "$_iface")
-        _y_ip=$(_escape_yaml_val "$_local_ip")
-        _y_mac=$(_escape_yaml_val "$_gw_mac")
-        _y_key=$(_escape_yaml_val "$_key")
-
         local tmp_conf
         tmp_conf=$(mktemp "$INSTALL_DIR/config.yaml.XXXXXXXX") || { log_error "Failed to create temp file"; return 1; }
         chmod 600 "$tmp_conf" 2>/dev/null
 
-        if [ "$ROLE" = "server" ]; then
-            cat > "$tmp_conf" << EOF
-role: "server"
-
-log:
-  level: "info"
-
-listen:
-  addr: ":${_port}"
-
-network:
-  interface: "${_y_iface}"
-  ipv4:
-    addr: "${_y_ip}:${_port}"
-    router_mac: "${_y_mac}"
-
-transport:
-  protocol: "kcp"
-  kcp:
-    mode: "fast"
-    key: "${_y_key}"
-EOF
-        else
-            cat > "$tmp_conf" << EOF
-role: "client"
-
-log:
-  level: "info"
-
-socks5:
-  - listen: "127.0.0.1:${_socks}"
-
-network:
-  interface: "${_y_iface}"
-  ipv4:
-    addr: "${_y_ip}:0"
-    router_mac: "${_y_mac}"
-
-server:
-  addr: "${_server}"
-
-transport:
-  protocol: "kcp"
-  kcp:
-    mode: "fast"
-    key: "${_y_key}"
-EOF
-        fi
+        INTERFACE="$_iface" LOCAL_IP="$_local_ip" GATEWAY_MAC="$_gw_mac" ENCRYPTION_KEY="$_key" generate_paqet_yaml "$tmp_conf"
 
         if ! mv "$tmp_conf" "$INSTALL_DIR/config.yaml"; then
             log_error "Failed to save config.yaml"
@@ -6976,6 +7622,7 @@ show_settings_menu() {
             echo "  m. Import Config String"
             echo "  a. Install additional backend"
             echo "  s. Switch backend (current: ${BACKEND})"
+            echo "  0. Performance Tuning & Supercharging (Turbo, Watchdog, MTU)"
             echo "  u. Uninstall"
             echo ""
             echo "  b. Back to main menu"
@@ -7006,6 +7653,7 @@ show_settings_menu() {
             m|M) import_config_string; read -n 1 -s -r -p "  Press any key..." < /dev/tty || true; redraw=true ;;
             a|A) install_additional_backend; redraw=true ;;
             s|S) switch_backend; redraw=true ;;
+            0) tune_menu; redraw=true ;;
             u|U) uninstall_paqctl; exit 0 ;;
             b|B) return ;;
             "") ;;
@@ -7349,10 +7997,12 @@ show_connection_info() {
         echo "  Run 'sudo paqctl menu' and select 'Settings & Tools'"
         echo "  to install a backend."
         echo ""
+        echo -e "${CYAN}═══════════════════════════════════════════════════════════════${NC}"
+        echo ""
+    else
+        export_config_string
     fi
 
-    echo -e "${CYAN}═══════════════════════════════════════════════════════════════${NC}"
-    echo ""
     read -n 1 -s -r -p "  Press any key to return..." < /dev/tty || true
 }
 
@@ -7483,6 +8133,7 @@ show_menu() {
             echo "  r. Quick Restart Service"
             echo "  b. Toggle Auto-start on Boot"
             echo "  8. Settings & Tools"
+            echo -e "  ${GREEN}t. Performance Tuning & Supercharging (v1.1.0)${NC}"
             echo -e "  ${YELLOW}c. Connection Info${NC}"
             echo "  i. Info & Help"
             echo -e "  ${RED}u. Uninstall${NC}"
@@ -7576,6 +8227,7 @@ show_menu() {
                 fi
                 read -n 1 -s -r -p "  Press any key to return..." < /dev/tty || true; redraw=true ;;
             8) show_settings_menu; redraw=true ;;
+            t|T) tune_menu; redraw=true ;;
             c|C) show_connection_info; redraw=true ;;
             i|I) show_info_menu; redraw=true ;;
             u|U) uninstall_paqctl; exit 0 ;;
@@ -7620,6 +8272,10 @@ case "${1:-menu}" in
     clean|cleanup)    system_cleanup ;;
     export|share)     export_config_string ;;
     import)           import_config_string ;;
+    turbo)            apply_turbo_mode ;;
+    turbo-off)        remove_turbo_mode ;;
+    watchdog)         manage_watchdog "${2:-status}" ;;
+    tune|tuning)      tune_menu ;;
     info|details|client) show_connection_info ;;
     enable|boot-enable)
         if command -v systemctl &>/dev/null; then systemctl enable paqctl.service && log_success "Auto-start enabled"; fi ;;
@@ -7812,20 +8468,20 @@ main() {
             elif command -v iptables &>/dev/null; then
                 modprobe iptable_raw 2>/dev/null || true
                 iptables -t raw -C PREROUTING -p tcp --dport "$_vio_port" -m comment --comment "paqctl" -j NOTRACK 2>/dev/null || \
-                    iptables -t raw -A PREROUTING -p tcp --dport "$_vio_port" -m comment --comment "paqctl" -j NOTRACK 2>/dev/null || true
+                    iptables -t raw -I PREROUTING 1 -p tcp --dport "$_vio_port" -m comment --comment "paqctl" -j NOTRACK 2>/dev/null || true
                 iptables -t raw -C OUTPUT -p tcp --sport "$_vio_port" -m comment --comment "paqctl" -j NOTRACK 2>/dev/null || \
-                    iptables -t raw -A OUTPUT -p tcp --sport "$_vio_port" -m comment --comment "paqctl" -j NOTRACK 2>/dev/null || true
+                    iptables -t raw -I OUTPUT 1 -p tcp --sport "$_vio_port" -m comment --comment "paqctl" -j NOTRACK 2>/dev/null || true
                 iptables -C INPUT -p tcp --dport "$_vio_port" -m comment --comment "paqctl" -j DROP 2>/dev/null || \
-                    iptables -A INPUT -p tcp --dport "$_vio_port" -m comment --comment "paqctl" -j DROP 2>/dev/null || \
+                    iptables -I INPUT 1 -p tcp --dport "$_vio_port" -m comment --comment "paqctl" -j DROP 2>/dev/null || \
                     log_warn "Failed to add VIO INPUT DROP rule"
                 iptables -C OUTPUT -p tcp --sport "$_vio_port" --tcp-flags RST RST -m comment --comment "paqctl" -j DROP 2>/dev/null || \
-                    iptables -A OUTPUT -p tcp --sport "$_vio_port" --tcp-flags RST RST -m comment --comment "paqctl" -j DROP 2>/dev/null || \
+                    iptables -I OUTPUT 1 -p tcp --sport "$_vio_port" --tcp-flags RST RST -m comment --comment "paqctl" -j DROP 2>/dev/null || \
                     log_warn "Failed to add VIO RST DROP rule"
                 if command -v ip6tables &>/dev/null; then
                     ip6tables -C INPUT -p tcp --dport "$_vio_port" -m comment --comment "paqctl" -j DROP 2>/dev/null || \
-                        ip6tables -A INPUT -p tcp --dport "$_vio_port" -m comment --comment "paqctl" -j DROP 2>/dev/null || true
+                        ip6tables -I INPUT 1 -p tcp --dport "$_vio_port" -m comment --comment "paqctl" -j DROP 2>/dev/null || true
                     ip6tables -C OUTPUT -p tcp --sport "$_vio_port" --tcp-flags RST RST -m comment --comment "paqctl" -j DROP 2>/dev/null || \
-                        ip6tables -A OUTPUT -p tcp --sport "$_vio_port" --tcp-flags RST RST -m comment --comment "paqctl" -j DROP 2>/dev/null || true
+                        ip6tables -I OUTPUT 1 -p tcp --sport "$_vio_port" --tcp-flags RST RST -m comment --comment "paqctl" -j DROP 2>/dev/null || true
                 fi
             else
                 log_warn "iptables not found - firewall rules cannot be applied"
@@ -7852,20 +8508,20 @@ main() {
             elif command -v iptables &>/dev/null; then
                 modprobe iptable_raw 2>/dev/null || true
                 iptables -t raw -C PREROUTING -p tcp --dport "$_vio_client_port" -m comment --comment "paqctl" -j NOTRACK 2>/dev/null || \
-                    iptables -t raw -A PREROUTING -p tcp --dport "$_vio_client_port" -m comment --comment "paqctl" -j NOTRACK 2>/dev/null || true
+                    iptables -t raw -I PREROUTING 1 -p tcp --dport "$_vio_client_port" -m comment --comment "paqctl" -j NOTRACK 2>/dev/null || true
                 iptables -t raw -C OUTPUT -p tcp --sport "$_vio_client_port" -m comment --comment "paqctl" -j NOTRACK 2>/dev/null || \
-                    iptables -t raw -A OUTPUT -p tcp --sport "$_vio_client_port" -m comment --comment "paqctl" -j NOTRACK 2>/dev/null || true
+                    iptables -t raw -I OUTPUT 1 -p tcp --sport "$_vio_client_port" -m comment --comment "paqctl" -j NOTRACK 2>/dev/null || true
                 iptables -C INPUT -p tcp --dport "$_vio_client_port" -m comment --comment "paqctl" -j DROP 2>/dev/null || \
-                    iptables -A INPUT -p tcp --dport "$_vio_client_port" -m comment --comment "paqctl" -j DROP 2>/dev/null || \
+                    iptables -I INPUT 1 -p tcp --dport "$_vio_client_port" -m comment --comment "paqctl" -j DROP 2>/dev/null || \
                     log_warn "Failed to add VIO client INPUT DROP rule"
                 iptables -C OUTPUT -p tcp --sport "$_vio_client_port" --tcp-flags RST RST -m comment --comment "paqctl" -j DROP 2>/dev/null || \
-                    iptables -A OUTPUT -p tcp --sport "$_vio_client_port" --tcp-flags RST RST -m comment --comment "paqctl" -j DROP 2>/dev/null || \
+                    iptables -I OUTPUT 1 -p tcp --sport "$_vio_client_port" --tcp-flags RST RST -m comment --comment "paqctl" -j DROP 2>/dev/null || \
                     log_warn "Failed to add VIO client RST DROP rule"
                 if command -v ip6tables &>/dev/null; then
                     ip6tables -C INPUT -p tcp --dport "$_vio_client_port" -m comment --comment "paqctl" -j DROP 2>/dev/null || \
-                        ip6tables -A INPUT -p tcp --dport "$_vio_client_port" -m comment --comment "paqctl" -j DROP 2>/dev/null || true
+                        ip6tables -I INPUT 1 -p tcp --dport "$_vio_client_port" -m comment --comment "paqctl" -j DROP 2>/dev/null || true
                     ip6tables -C OUTPUT -p tcp --sport "$_vio_client_port" --tcp-flags RST RST -m comment --comment "paqctl" -j DROP 2>/dev/null || \
-                        ip6tables -A OUTPUT -p tcp --sport "$_vio_client_port" --tcp-flags RST RST -m comment --comment "paqctl" -j DROP 2>/dev/null || true
+                        ip6tables -I OUTPUT 1 -p tcp --sport "$_vio_client_port" --tcp-flags RST RST -m comment --comment "paqctl" -j DROP 2>/dev/null || true
                 fi
             else
                 log_warn "iptables not found - firewall rules cannot be applied"
@@ -7889,6 +8545,12 @@ main() {
     setup_logrotate
     # Save settings to persist version and config
     save_settings
+    if [ "$TURBO_ENABLED" = "true" ]; then
+        /usr/local/bin/paqctl turbo 2>/dev/null || true
+    fi
+    if [ "$WATCHDOG_ENABLED" = "true" ]; then
+        /usr/local/bin/paqctl watchdog enable 2>/dev/null || true
+    fi
     echo ""
 
     # Step 7: Start the service

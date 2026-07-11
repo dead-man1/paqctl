@@ -194,6 +194,12 @@ class TunnelServerProtocol(QuicConnectionProtocol):
 
 
 
+    async def _safe_writer_drain(self, writer):
+        try:
+            await writer.drain()
+        except (ConnectionResetError, BrokenPipeError, ConnectionAbortedError, OSError) as e:
+            logger.debug(f"Writer drain connection error: {e}")
+
     def quic_event_received(self, event):
         # print("EVENT",event)
         if isinstance(event, StreamDataReceived):
@@ -210,12 +216,7 @@ class TunnelServerProtocol(QuicConnectionProtocol):
                 elif event.stream_id in self.tcp_connections:
                     writer = self.tcp_connections[event.stream_id][1]
                     writer.write(event.data)  # Send data over TCP
-                    try:
-                        asyncio.create_task(writer.drain())
-                    except ConnectionResetError as e42:
-                        logger.info(f"ERR in writer drain task : {e42}")
-                    except Exception as e43:
-                        logger.info(f"ERR in writer drain task : {e43}")
+                    asyncio.create_task(self._safe_writer_drain(writer))
 
                 # Forward data to the corresponding UDP connection
                 elif event.stream_id in self.udp_connections:

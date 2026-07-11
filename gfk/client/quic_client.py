@@ -212,6 +212,12 @@ class TunnelClientProtocol(QuicConnectionProtocol):
             logger.info(f"Client Error creating new udp stream: {e}")
         return None
 
+    async def _safe_writer_drain(self, writer):
+        try:
+            await writer.drain()
+        except (ConnectionResetError, BrokenPipeError, ConnectionAbortedError, OSError) as e:
+            logger.debug(f"Writer drain connection error: {e}")
+
     def quic_event_received(self, event):
         if isinstance(event, StreamDataReceived):
             try:
@@ -222,7 +228,7 @@ class TunnelClientProtocol(QuicConnectionProtocol):
                 elif event.stream_id in self.tcp_connections:
                     writer = self.tcp_connections[event.stream_id][1]
                     writer.write(event.data)
-                    asyncio.create_task(writer.drain())
+                    asyncio.create_task(self._safe_writer_drain(writer))
 
                 elif event.stream_id in self.udp_stream_to_addr:
                     addr = self.udp_stream_to_addr[event.stream_id]
@@ -371,10 +377,33 @@ def Quic_client():
 
 
 if __name__ == "__main__":
+    import signal
+    active_process = None
+
+    def handle_shutdown(sig, frame):
+        logger.info("quic_client shutting down...")
+        if active_process and active_process.is_alive():
+            try:
+                active_process.terminate()
+                active_process.join(timeout=2)
+            except Exception:
+                pass
+        sys.exit(0)
+
+    signal.signal(signal.SIGINT, handle_shutdown)
+    if hasattr(signal, 'SIGTERM'):
+        signal.signal(signal.SIGTERM, handle_shutdown)
+
     while True:
-        process = multiprocessing.Process(target=Quic_client)
-        process.start()
-        while process.is_alive():
-            time.sleep(5)
-        logger.info("client is dead. restarting ...")
-        time.sleep(1)
+        try:
+            active_process = multiprocessing.Process(target=Quic_client)
+            active_process.start()
+            while active_process.is_alive():
+                time.sleep(2)
+            logger.info("client is dead. restarting ...")
+            time.sleep(1)
+        except (KeyboardInterrupt, SystemExit):
+            handle_shutdown(None, None)
+        except Exception as e:
+            logger.info(f"Loop error: {e}. Restarting...")
+            time.sleep(1)
