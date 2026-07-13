@@ -1401,7 +1401,7 @@ function Find-OptimalMtu {
     Write-Info "Running Smart MTU Auto-Discovery..."
     $server = Get-Setting -Key "SERVER_ADDR" -DefaultValue "8.8.8.8"
     $target = ($server -split ':')[0]
-    if (-not $target) { $target = "8.8.8.8" }
+    if (-not $target -or $target -eq "0.0.0.0" -or $target -eq "127.0.0.1" -or $target -eq "localhost") { $target = "8.8.8.8" }
     Write-Info "  Testing path MTU to $target..."
     $mtu = 1500
     $found = 0

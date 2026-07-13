@@ -3397,7 +3397,10 @@ detect_optimal_mtu() {
     log_info "Running Smart MTU Auto-Discovery..."
     local target="8.8.8.8"
     if [ "$ROLE" = "client" ] && [ -n "$REMOTE_SERVER" ]; then
-        target="${REMOTE_SERVER%:*}"
+        local _srv="${REMOTE_SERVER%:*}"
+        if [ -n "$_srv" ] && [ "$_srv" != "0.0.0.0" ] && [ "$_srv" != "127.0.0.1" ] && [ "$_srv" != "localhost" ]; then
+            target="$_srv"
+        fi
     fi
     echo -e "  ${DIM}Testing path MTU to ${target}...${NC}"
 
