@@ -682,6 +682,7 @@ function New-GfkConfig {
         return $false
     }
 
+    $quicMtu = Get-Setting -Key "KCP_MTU" -DefaultValue "1350"
     # Create parameters.py for GFK (matching expected variable names)
     $params = @"
 # GFW-knocker client configuration (auto-generated)
@@ -715,7 +716,7 @@ quic_local_ip = "127.0.0.1"
 quic_verify_cert = False
 quic_idle_timeout = 86400
 udp_timeout = 300
-quic_mtu = 1420
+quic_mtu = $quicMtu
 quic_max_data = 1073741824
 quic_max_stream_data = 1073741824
 quic_auth_code = "$AuthCode"
@@ -1402,7 +1403,7 @@ function Find-OptimalMtu {
     $target = ($server -split ':')[0]
     if (-not $target) { $target = "8.8.8.8" }
     Write-Info "  Testing path MTU to $target..."
-    $mtu = 1460
+    $mtu = 1500
     $found = 0
     while ($mtu -ge 1200) {
         $bufferSize = $mtu - 28
@@ -1418,9 +1419,11 @@ function Find-OptimalMtu {
         Write-Warn "ICMP ping blocked by network or firewall. Defaulting to safe MTU: 1350"
         $found = 1350
     } else {
-        Write-Host "  Optimal path MTU detected: " -NoNewline; Write-Host "$found" -ForegroundColor Green
+        Write-Host "  Physical path MTU detected: " -NoNewline; Write-Host "$found" -ForegroundColor Green
+        if ($found -gt 100) { $found = $found - 100 } else { $found = 1350 }
+        Write-Host "  Applying Safe Tunnel MTU:   " -NoNewline; Write-Host "$found" -ForegroundColor Cyan
     }
-    Write-Host "  (Accounted for IP/UDP headers without packet fragmentation)" -ForegroundColor DarkGray
+    Write-Host "  (Reserved 100 bytes for KCP/AEAD encapsulation overhead to prevent 'Message too large' errors)" -ForegroundColor DarkGray
     $existing = @{}
     if (Test-Path $SettingsFile) {
         Get-Content $SettingsFile -ErrorAction SilentlyContinue | ForEach-Object {

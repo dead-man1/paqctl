@@ -1968,7 +1968,7 @@ quic_local_ip = "127.0.0.1"
 
 quic_idle_timeout = 86400
 udp_timeout = 300
-quic_mtu = 1420
+quic_mtu = ${KCP_MTU:-1350}
 quic_verify_cert = False
 quic_max_data = 1073741824
 quic_max_stream_data = 1073741824
@@ -2988,7 +2988,7 @@ quic_client_port = ${quic_client_port}
 quic_local_ip = "127.0.0.1"
 quic_idle_timeout = 86400
 udp_timeout = 300
-quic_mtu = 1420
+quic_mtu = ${KCP_MTU:-1350}
 quic_verify_cert = False
 quic_max_data = 1073741824
 quic_max_stream_data = 1073741824
@@ -3408,7 +3408,7 @@ detect_optimal_mtu() {
         ping_flag="-D"
     fi
 
-    local mtu=1460
+    local mtu=1500
     local found=0
     if ping -c 1 -W 1 -s 64 "$target" &>/dev/null || ping -c 1 -W 1 127.0.0.1 &>/dev/null; then
         while [ $mtu -ge 1200 ]; do
@@ -3425,9 +3425,15 @@ detect_optimal_mtu() {
         log_warn "ICMP ping probes restricted or blocked by network/container firewall. Defaulting to safe MTU: 1350"
         found=1350
     else
-        log_success "Optimal path MTU detected: ${found}"
+        log_success "Physical path MTU detected: ${found}"
+        if [ "$found" -gt 100 ]; then
+            found=$((found - 100))
+        else
+            found=1350
+        fi
+        log_info "Applying Safe KCP/Tunnel MTU: ${found} (reserved 100 bytes for KCP header & AEAD crypto overhead)"
     fi
-    echo -e "  ${DIM}(Accounted for IP/UDP headers without packet fragmentation)${NC}"
+    echo -e "  ${DIM}(Prevents 'Message too large' / EMSGSIZE socket errors under high throughput)${NC}"
     KCP_MTU="$found"
     save_settings 2>/dev/null || true
     return 0
