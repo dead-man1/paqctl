@@ -6004,7 +6004,14 @@ import_config_string() {
         [ -n "$_fport" ] && _safe_update_setting "FORWARD_PORT" "$_fport" "$INSTALL_DIR/settings.conf"
         [ -n "$_ftgt" ] && _safe_update_setting "FORWARD_TARGET" "$_ftgt" "$INSTALL_DIR/settings.conf"
         [ -n "$_profile" ] && _safe_update_setting "KCP_PROFILE" "$_profile" "$INSTALL_DIR/settings.conf"
-        [ -n "$_mtu" ] && _safe_update_setting "KCP_MTU" "$_mtu" "$INSTALL_DIR/settings.conf"
+        if [ -n "$_mtu" ]; then
+            local _curr_mtu=$(grep -E "^KCP_MTU=" "$INSTALL_DIR/settings.conf" 2>/dev/null | cut -d'=' -f2 | tr -d '"' || echo "")
+            if [ -n "$_curr_mtu" ] && [ "$_curr_mtu" -gt 0 ] 2>/dev/null && [ "$_curr_mtu" -lt "$_mtu" ] 2>/dev/null; then
+                log_info "Preserving local lower MTU (${_curr_mtu}) over imported server MTU (${_mtu}) to prevent local link overflow."
+                _mtu="$_curr_mtu"
+            fi
+            _safe_update_setting "KCP_MTU" "$_mtu" "$INSTALL_DIR/settings.conf"
+        fi
 
         REMOTE_SERVER="$_ip:$_port"; LISTEN_PORT="$_port"; ENCRYPTION_KEY="$_key"
         [ -n "$_socks" ] && SOCKS_PORT="$_socks"

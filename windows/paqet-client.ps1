@@ -1276,6 +1276,10 @@ function Manage-ConfigString {
                     if ($_ -match '^([^=]+)="?(.*)"?$') { $existing[$Matches[1]] = $Matches[2] }
                 }
             }
+            if ($existing.ContainsKey("KCP_MTU") -and [int]$existing["KCP_MTU"] -gt 0 -and [int]$existing["KCP_MTU"] -lt [int]$mtu) {
+                Write-Info "Preserving local lower MTU ($($existing['KCP_MTU'])) over imported server MTU ($mtu) to prevent local link overflow."
+                $mtu = $existing["KCP_MTU"]
+            }
             $existing["KCP_MTU"] = $mtu
             $lines = @()
             foreach ($k in $existing.Keys) { $lines += "$k=`"$($existing[$k])`"" }
