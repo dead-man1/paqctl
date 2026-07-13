@@ -5936,7 +5936,7 @@ export_config_string() {
         if [ -z "$key" ] && [ -f "$INSTALL_DIR/config.yaml" ]; then
             key=$(grep -E "^key:" "$INSTALL_DIR/config.yaml" 2>/dev/null | awk '{print $2}' | tr -d '"' || echo "")
         fi
-        local raw_str="paqet|${_ip}|${port}|${key}|${SOCKS_PORT:-1080}|${ROUTING_MODE:-socks5}|${FORWARD_PORT:-14000}|${FORWARD_TARGET:-127.0.0.1:80}|${KCP_PROFILE:-standard}"
+        local raw_str="paqet|${_ip}|${port}|${key}|${SOCKS_PORT:-1080}|${ROUTING_MODE:-socks5}|${FORWARD_PORT:-14000}|${FORWARD_TARGET:-127.0.0.1:80}|${KCP_PROFILE:-standard}|${KCP_MTU:-1350}"
         local b64=$(echo -n "$raw_str" | base64 | tr -d '\r\n')
         echo -e "  ${BOLD}Shareable Paqet Client String (v2 format):${NC}"
         echo -e "  ${GREEN}paqet://${b64}${NC}"
@@ -5967,13 +5967,13 @@ import_config_string() {
     if [ "$proto" = "paqet" ]; then
         local _ip _port _key _socks _rmode _fport _ftgt _profile
         local p1 p2 p3 p4 p5 p6 p7 p8
-        IFS='|' read -r _p p1 p2 p3 p4 p5 p6 p7 p8 <<< "$decoded"
+        IFS='|' read -r _p p1 p2 p3 p4 p5 p6 p7 p8 p9 <<< "$decoded"
         if [ "$_p" != "paqet" ] || [ -z "$p1" ] || [ -z "$p2" ]; then
             log_error "Invalid paqet string format."
             return 1
         fi
         if [[ "$p1" =~ ^([0-9a-zA-Z\.\-_]+|\[[0-9a-fA-F:]+\]):([0-9]+)$ ]]; then
-            # 8-part combined format: paqet|IP:PORT|KEY|SOCKS|RMODE|FPORT|FTGT|PROF
+            # 8-part or 9-part combined format: paqet|IP:PORT|KEY|SOCKS|RMODE|FPORT|FTGT|PROF|MTU
             _ip="${BASH_REMATCH[1]}"
             _port="${BASH_REMATCH[2]}"
             _key="$p2"
@@ -5982,8 +5982,9 @@ import_config_string() {
             _fport="${p5:-14000}"
             _ftgt="${p6:-127.0.0.1:80}"
             _profile="${p7:-standard}"
+            _mtu="${p8:-1350}"
         else
-            # 9-part separate format: paqet|IP|PORT|KEY|SOCKS|RMODE|FPORT|FTGT|PROF
+            # 9-part or 10-part separate format: paqet|IP|PORT|KEY|SOCKS|RMODE|FPORT|FTGT|PROF|MTU
             _ip="$p1"
             _port="$p2"
             _key="$p3"
@@ -5992,6 +5993,7 @@ import_config_string() {
             _fport="${p6:-14000}"
             _ftgt="${p7:-127.0.0.1:80}"
             _profile="${p8:-standard}"
+            _mtu="${p9:-1350}"
         fi
         log_info "Importing Paqet Client Config (Server: $_ip:$_port)..."
         _safe_update_setting "REMOTE_SERVER" "$_ip:$_port" "$INSTALL_DIR/settings.conf"
@@ -6002,6 +6004,7 @@ import_config_string() {
         [ -n "$_fport" ] && _safe_update_setting "FORWARD_PORT" "$_fport" "$INSTALL_DIR/settings.conf"
         [ -n "$_ftgt" ] && _safe_update_setting "FORWARD_TARGET" "$_ftgt" "$INSTALL_DIR/settings.conf"
         [ -n "$_profile" ] && _safe_update_setting "KCP_PROFILE" "$_profile" "$INSTALL_DIR/settings.conf"
+        [ -n "$_mtu" ] && _safe_update_setting "KCP_MTU" "$_mtu" "$INSTALL_DIR/settings.conf"
 
         REMOTE_SERVER="$_ip:$_port"; LISTEN_PORT="$_port"; ENCRYPTION_KEY="$_key"
         [ -n "$_socks" ] && SOCKS_PORT="$_socks"
@@ -6009,6 +6012,7 @@ import_config_string() {
         [ -n "$_fport" ] && FORWARD_PORT="$_fport"
         [ -n "$_ftgt" ] && FORWARD_TARGET="$_ftgt"
         [ -n "$_profile" ] && KCP_PROFILE="$_profile"
+        [ -n "$_mtu" ] && KCP_MTU="$_mtu"
 
         if [ -z "$INTERFACE" ] || [ -z "$LOCAL_IP" ] || [ -z "$GATEWAY_MAC" ]; then
             detect_network

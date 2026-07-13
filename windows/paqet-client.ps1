@@ -1210,12 +1210,13 @@ function Manage-ConfigString {
             $fport = Get-Setting -Key "FORWARD_PORT" -DefaultValue "14000"
             $ftgt = Get-Setting -Key "FORWARD_TARGET" -DefaultValue "127.0.0.1:80"
             $prof = Get-Setting -Key "KCP_PROFILE" -DefaultValue "standard"
+            $mtu = Get-Setting -Key "KCP_MTU" -DefaultValue "1350"
             $ip = $server; $port = "8443"
             if ($server -match '^([0-9a-zA-Z\.\-_]+|\[[0-9a-fA-F:]+\]):([0-9]+)$') {
                 $ip = $Matches[1]; $port = $Matches[2]
             }
             $socksPort = Get-Setting -Key "SOCKS_PORT" -DefaultValue "1080"
-            $raw = "paqet|$ip|$port|$key|$socksPort|$rmode|$fport|$ftgt|$prof"
+            $raw = "paqet|$ip|$port|$key|$socksPort|$rmode|$fport|$ftgt|$prof|$mtu"
             $b64 = [Convert]::ToBase64String([System.Text.Encoding]::UTF8.GetBytes($raw))
             Write-Host "  Shareable Paqet String (v2 format):" -ForegroundColor White
             Write-Host "  paqet://$b64" -ForegroundColor Green
@@ -1246,28 +1247,40 @@ function Manage-ConfigString {
             $parts = $decoded -split '\|'
             if ($parts.Length -lt 3 -or $parts[0] -ne "paqet") { Write-Err "Invalid paqet string."; return }
             if ($parts[1] -match '^([0-9a-zA-Z\.\-_]+|\[[0-9a-fA-F:]+\]):([0-9]+)$') {
-                # 8-part combined format: paqet|IP:PORT|KEY|SOCKS|RMODE|FPORT|FTGT|PROF
+                # 8-part or 9-part combined format: paqet|IP:PORT|KEY|SOCKS|RMODE|FPORT|FTGT|PROF|MTU
                 $server = $parts[1]; $key = $parts[2]
                 $socks = if ($parts.Length -gt 3 -and $parts[3]) { $parts[3] } else { "1080" }
                 $rmode = if ($parts.Length -gt 4 -and $parts[4]) { $parts[4] } else { "socks5" }
                 $fport = if ($parts.Length -gt 5 -and $parts[5]) { $parts[5] } else { "14000" }
                 $ftgt = if ($parts.Length -gt 6 -and $parts[6]) { $parts[6] } else { "127.0.0.1:80" }
                 $prof = if ($parts.Length -gt 7 -and $parts[7]) { $parts[7] } else { "standard" }
+                $mtu = if ($parts.Length -gt 8 -and $parts[8]) { $parts[8] } else { "1350" }
             } else {
-                # 9-part separate format: paqet|IP|PORT|KEY|SOCKS|RMODE|FPORT|FTGT|PROF
+                # 9-part or 10-part separate format: paqet|IP|PORT|KEY|SOCKS|RMODE|FPORT|FTGT|PROF|MTU
                 $server = "$($parts[1]):$($parts[2])"; $key = $parts[3]
                 $socks = if ($parts.Length -gt 4 -and $parts[4]) { $parts[4] } else { "1080" }
                 $rmode = if ($parts.Length -gt 5 -and $parts[5]) { $parts[5] } else { "socks5" }
                 $fport = if ($parts.Length -gt 6 -and $parts[6]) { $parts[6] } else { "14000" }
                 $ftgt = if ($parts.Length -gt 7 -and $parts[7]) { $parts[7] } else { "127.0.0.1:80" }
                 $prof = if ($parts.Length -gt 8 -and $parts[8]) { $parts[8] } else { "standard" }
+                $mtu = if ($parts.Length -gt 9 -and $parts[9]) { $parts[9] } else { "1350" }
             }
 
             Write-Info "Importing Paqet config ($server)..."
             if (-not (Test-Path $InstallDir)) { New-Item -ItemType Directory -Path $InstallDir -Force | Out-Null }
             New-PaqetConfig -Server $server -SecretKey $key -RoutingMode $rmode -SocksPort $socks -ForwardPort $fport -ForwardTarget $ftgt -KcpProfile $prof | Out-Null
             Save-Settings -Backend "paqet" -ServerAddr $server -SocksPort $socks -RoutingMode $rmode -ForwardPort $fport -ForwardTarget $ftgt -KcpProfile $prof
-            Write-Success "Paqet config imported! Starting service..."
+            $existing = @{}
+            if (Test-Path "$InstallDir\settings.conf") {
+                Get-Content "$InstallDir\settings.conf" -ErrorAction SilentlyContinue | ForEach-Object {
+                    if ($_ -match '^([^=]+)="?(.*)"?$') { $existing[$Matches[1]] = $Matches[2] }
+                }
+            }
+            $existing["KCP_MTU"] = $mtu
+            $lines = @()
+            foreach ($k in $existing.Keys) { $lines += "$k=`"$($existing[$k])`"" }
+            [System.IO.File]::WriteAllLines("$InstallDir\settings.conf", $lines)
+            Write-Success "Paqet config imported & MTU synchronized ($mtu)! Starting service..."
             Start-Paqet
         } elseif ($str -match '^gfk://(.+)$') {
             $b64 = $Matches[1].Trim() -replace '-', '+' -replace '_', '/'
