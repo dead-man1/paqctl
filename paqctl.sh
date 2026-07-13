@@ -3426,12 +3426,12 @@ detect_optimal_mtu() {
         found=1350
     else
         log_success "Physical path MTU detected: ${found}"
-        if [ "$found" -gt 100 ]; then
-            found=$((found - 100))
+        if [ "$found" -gt 150 ]; then
+            found=$((found - 150))
         else
             found=1350
         fi
-        log_info "Applying Safe KCP/Tunnel MTU: ${found} (reserved 100 bytes for KCP header & AEAD crypto overhead)"
+        log_info "Applying Safe KCP/Tunnel MTU: ${found} (reserved 150 bytes for KCP header & AEAD crypto overhead)"
     fi
     echo -e "  ${DIM}(Prevents 'Message too large' / EMSGSIZE socket errors under high throughput)${NC}"
     KCP_MTU="$found"

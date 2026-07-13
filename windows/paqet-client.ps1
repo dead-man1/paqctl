@@ -1420,10 +1420,10 @@ function Find-OptimalMtu {
         $found = 1350
     } else {
         Write-Host "  Physical path MTU detected: " -NoNewline; Write-Host "$found" -ForegroundColor Green
-        if ($found -gt 100) { $found = $found - 100 } else { $found = 1350 }
+        if ($found -gt 150) { $found = $found - 150 } else { $found = 1350 }
         Write-Host "  Applying Safe Tunnel MTU:   " -NoNewline; Write-Host "$found" -ForegroundColor Cyan
     }
-    Write-Host "  (Reserved 100 bytes for KCP/AEAD encapsulation overhead to prevent 'Message too large' errors)" -ForegroundColor DarkGray
+    Write-Host "  (Reserved 150 bytes for KCP/AEAD encapsulation overhead to prevent 'Message too large' errors)" -ForegroundColor DarkGray
     $existing = @{}
     if (Test-Path $SettingsFile) {
         Get-Content $SettingsFile -ErrorAction SilentlyContinue | ForEach-Object {
