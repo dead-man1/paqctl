@@ -7,7 +7,7 @@
 |_|             |_|
 ```
 
-[![Version](https://img.shields.io/badge/version-1.0.1-blue.svg)](https://github.com/SamNet-dev/paqctl/releases)
+[![Version](https://img.shields.io/badge/version-1.1.0-blue.svg)](https://github.com/SamNet-dev/paqctl/releases)
 [![License](https://img.shields.io/badge/license-AGPL--3.0-green.svg)](LICENSE)
 [![Server](https://img.shields.io/badge/server-Linux-lightgrey.svg)](https://github.com/SamNet-dev/paqctl)
 [![Client](https://img.shields.io/badge/client-Windows%20%7C%20macOS%20%7C%20Linux-green.svg)](https://github.com/SamNet-dev/paqctl)
@@ -240,7 +240,7 @@ paqctl v1.1.0 introduces powerful automated optimizations while making installat
   - **Low-Latency / Gaming & VOIP**: Zero-delay packet delivery for real-time applications.
 - **🚀 OS-Level Kernel Turbo Mode**: One-click Linux and Windows optimization (`sudo paqctl turbo` or client menu `o`/`3`). Automatically enables **TCP BBR congestion control**, expands OS socket buffers to **32MB**, optimizes TCP window scaling, and increases file descriptor limits.
 - **🛡️ Self-Healing Watchdog & Auto-Recovery**: Zero-downtime monitoring (`sudo paqctl watchdog` or client menu `w`/`4`). Deploys background timers (systemd on Linux, Task Scheduler on Windows) to continuously check connection health and auto-recover stalled tunnels.
-- **⚡ Smart MTU Auto-Discovery**: Automatically calculates the exact path MTU to eliminate packet fragmentation and overhead.
+- **⚡ Smart MTU Auto-Discovery & Auto-Sync Safeguard**: Automatically calculates optimal path MTU with a safe 150-byte KCP header/crypto headroom. When exporting shareable `paqet://` strings, the server's MTU is embedded; during client/bridge import, our intelligent **`Min-MTU Safeguard` (`min(Local_MTU, Server_MTU)`)** prevents local network link overflow, `Message too large` (`EMSGSIZE`) kernel errors, and connection crashes.
 - **🖥️ Windows Desktop Shortcuts & Auto-Reconnect**: Create instant desktop shortcuts and persistent auto-reconnect loops directly from the Windows client menu.
 
 ---
@@ -1429,7 +1429,7 @@ paqctl به صورت خودکار SOCKS5 را روی پورت آزاد بعدی 
   - **پینگ پایین / گیمینگ و تماس (Gaming & VOIP)**: ارسال بدون تاخیر بسته‌ها برای بازی‌های آنلاین و مکالمات صوتی.
 - **🚀 حالت توربو سیستم‌عامل (OS Turbo Mode)**: بهینه‌سازی یک-کلیک هسته لینوکس و ویندوز (`sudo paqctl turbo` یا گزینه `o` در منو). فعال‌سازی الگوریتم **TCP BBR**، افزایش بافر سوکت‌ها تا **۳۲ مگابایت** و بهینه‌سازی پارامترهای شبکه.
 - **🛡️ واچ‌داگ خودکار و ریکاوری بدون قطعی (Watchdog)**: پایش دائمی سلامت اتصال (`sudo paqctl watchdog` یا گزینه `w` در منو). با ایجاد سرویس بک‌گراند (systemd در لینوکس و Task Scheduler در ویندوز)، وضعیت تانل را هر ۱ دقیقه بررسی کرده و در صورت بروز اختلال، اتصال را به صورت خودکار بازیابی می‌کند.
-- **⚡ تشخیص هوشمند MTU**: محاسبه خودکار حداکثر اندازه بسته (MTU) در مسیر شبکه برای جلوگیری از تکه‌تکه شدن پکت‌ها و کاهش لتنسی.
+- **⚡ تشخیص هوشمند و همگام‌سازی خودکار MTU (Auto-Sync Min-MTU)**: محاسبه خودکار اندازه بسته با حاشیه امنیت ۱۵۰ بایت و گنجاندن عدد MTU سرور داخل لینک‌های اشتراک‌گذاری `paqet://`. هنگام ایمپورت در سمت کلاینت یا سرور داخلی، مکانیزم هوشمند **`min(Local_MTU, Server_MTU)`** مانع از هرگونه اورفلو، ارور `Message too large` در سطح کرنل و کرش اتصال می‌شود.
 - **🖥️ ساخت شورت‌کات دسکتاپ و اتصال خودکار در ویندوز**: ایجاد شورت‌کات دسکتاپ و فعال‌سازی قابلیت اتصال خودکار از طریق منوی کلاینت ویندوز.
 
 ---
