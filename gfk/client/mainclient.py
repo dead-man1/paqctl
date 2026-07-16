@@ -72,8 +72,10 @@ def signal_handler(sig, frame):
 
 if __name__ == "__main__":
     signal.signal(signal.SIGINT, signal_handler)
-    if not IS_WINDOWS:
+    if hasattr(signal, 'SIGTERM'):
         signal.signal(signal.SIGTERM, signal_handler)
+    if hasattr(signal, 'SIGBREAK'):
+        signal.signal(signal.SIGBREAK, signal_handler)
 
     print("Starting GFK client...")
     p1 = run_script(scripts[0])
@@ -84,9 +86,16 @@ if __name__ == "__main__":
     print("GFK running. Press Ctrl+C to stop.\n")
 
     try:
-        p1.wait()
-        p2.wait()
-        print("All subprocesses have completed.")
+        while True:
+            time.sleep(1)
+            if p1.poll() is not None:
+                print(f"{scripts[0]} terminated unexpectedly (code {p1.returncode}). Restarting...")
+                p1 = run_script(scripts[0])
+                processes[0] = p1
+            if p2.poll() is not None:
+                print(f"{scripts[1]} terminated unexpectedly (code {p2.returncode}). Restarting...")
+                p2 = run_script(scripts[1])
+                processes[1] = p2
     except KeyboardInterrupt:
         signal_handler(None, None)
 

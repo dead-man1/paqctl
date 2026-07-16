@@ -279,8 +279,10 @@ function Get-InstalledBackend {
     if (Test-Path $SettingsFile) {
         $content = Get-Content $SettingsFile -ErrorAction SilentlyContinue
         foreach ($line in $content) {
-            if ($line -match '^BACKEND="?(\w+)"?') {
-                return $Matches[1]
+            if ($line -match '^BACKEND="?([\w-]+)"?') {
+                $b = $Matches[1]
+                if ($b -eq "gfw-knocker") { return "gfk" }
+                return $b
             }
         }
     }
@@ -1824,7 +1826,7 @@ if ($WatchdogCheck) {
         $running = Get-Process -Name "paqet_windows_amd64" -ErrorAction SilentlyContinue
         if (-not $running) { Start-Paqet }
     } elseif ($backend -eq "gfk") {
-        $running = Get-Process -Name "python" -ErrorAction SilentlyContinue | Where-Object { $_.MainWindowTitle -match "gfk|quic" -or $_.CommandLine -match "gfk|quic" }
+        $running = Get-CimInstance Win32_Process -Filter "Name LIKE 'python%'" -ErrorAction SilentlyContinue | Where-Object { $_.CommandLine -match "mainclient|quic_client|vio_client|gfk" }
         if (-not $running) { Start-Gfk }
     }
     exit 0

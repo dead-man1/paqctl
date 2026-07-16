@@ -960,126 +960,6 @@ generate_config() {
         fi
     fi
 
-    # Escape YAML special characters to prevent injection
-    _escape_yaml() {
-        local s="$1"
-        # If value contains special chars, quote it
-        if [[ "$s" =~ [:\#\[\]{}\"\'\|\>\<\&\*\!\%\@\`] ]] || [[ "$s" =~ ^[[:space:]] ]] || [[ "$s" =~ [[:space:]]$ ]]; then
-            s="${s//\\/\\\\}"  # Escape backslashes
-            s="${s//\"/\\\"}"  # Escape double quotes
-            printf '"%s"' "$s"
-        else
-            printf '%s' "$s"
-        fi
-    }
-
-    generate_paqet_yaml() {
-        local target_file="$1"
-        local _y_iface _y_ip _y_mac _y_key _y_server _tcp_local_flags _tcp_remote_flags
-        _y_iface=$(_escape_yaml "${INTERFACE:-${IFACE:-eth0}}")
-        _y_ip=$(_escape_yaml "${LOCAL_IP:-}")
-        _y_mac=$(_escape_yaml "${GATEWAY_MAC:-${GW_MAC:-}}")
-        _y_key=$(_escape_yaml "${ENCRYPTION_KEY:-${KEY:-}}")
-        _tcp_local_flags=$(echo "${PAQET_TCP_LOCAL_FLAG:-PA}" | sed 's/,/", "/g; s/.*/["&"]/')
-        _tcp_remote_flags=$(echo "${PAQET_TCP_REMOTE_FLAG:-PA}" | sed 's/,/", "/g; s/.*/["&"]/')
-
-        local _conn="${KCP_CONN:-2}"
-        local _mtu="${KCP_MTU:-1350}"
-        local _sndwnd="${KCP_SNDWND:-1024}"
-        local _rcvwnd="${KCP_RCVWND:-1024}"
-        local _nodelay="${KCP_NODELAY:-0}"
-        local _interval="${KCP_INTERVAL:-20}"
-        local _resend="${KCP_RESEND:-2}"
-        local _nocongestion="${KCP_NOCONGESTION:-0}"
-        local _sockbuf="${KCP_SOCKBUF:-4194304}"
-        local _smuxbuf="${KCP_SMUXBUF:-4194304}"
-
-        if [ "$ROLE" = "server" ]; then
-            cat > "$target_file" << EOF
-role: "server"
-
-log:
-  level: "info"
-
-listen:
-  addr: ":${LISTEN_PORT:-8443}"
-
-network:
-  interface: "${_y_iface}"
-  ipv4:
-    addr: "${_y_ip}:${LISTEN_PORT:-8443}"
-    router_mac: "${_y_mac}"
-  tcp:
-    local_flag: ${_tcp_local_flags}
-    remote_flag: ${_tcp_remote_flags}
-
-transport:
-  protocol: "kcp"
-  kcp:
-    mode: "fast"
-    key: "${_y_key}"
-    conn: ${_conn}
-    mtu: ${_mtu}
-    sndwnd: ${_sndwnd}
-    rcvwnd: ${_rcvwnd}
-    nodelay: ${_nodelay}
-    interval: ${_interval}
-    resend: ${_resend}
-    nocongestion: ${_nocongestion}
-    sockbuf: ${_sockbuf}
-    smuxbuf: ${_smuxbuf}
-EOF
-        else
-            _y_server=$(_escape_yaml "${REMOTE_SERVER:-}")
-            local _routing_section=""
-            if [ "${ROUTING_MODE:-socks5}" = "forward" ]; then
-                _routing_section="forward:
-  - listen: \"0.0.0.0:${FORWARD_PORT:-14000}\"
-    target: \"${FORWARD_TARGET:-127.0.0.1:80}\""
-            else
-                _routing_section="socks5:
-  - listen: \"127.0.0.1:${SOCKS_PORT:-1080}\""
-            fi
-
-            cat > "$target_file" << EOF
-role: "client"
-
-log:
-  level: "info"
-
-${_routing_section}
-
-network:
-  interface: "${_y_iface}"
-  ipv4:
-    addr: "${_y_ip}:0"
-    router_mac: "${_y_mac}"
-  tcp:
-    local_flag: ${_tcp_local_flags}
-    remote_flag: ${_tcp_remote_flags}
-
-server:
-  addr: "${_y_server}"
-
-transport:
-  protocol: "kcp"
-  kcp:
-    mode: "fast"
-    key: "${_y_key}"
-    conn: ${_conn}
-    mtu: ${_mtu}
-    sndwnd: ${_sndwnd}
-    rcvwnd: ${_rcvwnd}
-    nodelay: ${_nodelay}
-    interval: ${_interval}
-    resend: ${_resend}
-    nocongestion: ${_nocongestion}
-    sockbuf: ${_sockbuf}
-    smuxbuf: ${_smuxbuf}
-EOF
-        fi
-    }
-
     # Ensure install directory exists
     mkdir -p "$INSTALL_DIR" || { log_error "Failed to create $INSTALL_DIR"; return 1; }
 
@@ -1227,126 +1107,11 @@ _is_firewalld_active() {
 }
 
 apply_iptables_rules() {
-    local port="$1"
-    if [ -z "$port" ]; then
-        log_error "No port specified for iptables rules"
-        return 1
-    fi
-
-    log_info "Applying firewall rules for port $port..."
-
-    # firewalld path (Fedora/RHEL)
-    if _is_firewalld_active; then
-        firewall-cmd --direct --query-rule ipv4 raw PREROUTING 0 -p tcp --dport "$port" -m comment --comment "paqctl" -j NOTRACK 2>/dev/null || \
-        firewall-cmd --direct --add-rule ipv4 raw PREROUTING 0 -p tcp --dport "$port" -m comment --comment "paqctl" -j NOTRACK 2>/dev/null || \
-            { log_error "Failed to add PREROUTING NOTRACK rule via firewalld"; return 1; }
-        firewall-cmd --direct --query-rule ipv4 raw OUTPUT 0 -p tcp --sport "$port" -m comment --comment "paqctl" -j NOTRACK 2>/dev/null || \
-        firewall-cmd --direct --add-rule ipv4 raw OUTPUT 0 -p tcp --sport "$port" -m comment --comment "paqctl" -j NOTRACK 2>/dev/null || \
-            { log_error "Failed to add OUTPUT NOTRACK rule via firewalld"; return 1; }
-        firewall-cmd --direct --query-rule ipv4 mangle OUTPUT 0 -p tcp --sport "$port" --tcp-flags RST RST -m comment --comment "paqctl" -j DROP 2>/dev/null || \
-        firewall-cmd --direct --add-rule ipv4 mangle OUTPUT 0 -p tcp --sport "$port" --tcp-flags RST RST -m comment --comment "paqctl" -j DROP 2>/dev/null || \
-            { log_error "Failed to add RST DROP rule via firewalld"; return 1; }
-        log_success "IPv4 firewalld rules applied"
-        # IPv6
-        firewall-cmd --direct --add-rule ipv6 raw PREROUTING 0 -p tcp --dport "$port" -m comment --comment "paqctl" -j NOTRACK 2>/dev/null || true
-        firewall-cmd --direct --add-rule ipv6 raw OUTPUT 0 -p tcp --sport "$port" -m comment --comment "paqctl" -j NOTRACK 2>/dev/null || true
-        firewall-cmd --direct --add-rule ipv6 mangle OUTPUT 0 -p tcp --sport "$port" --tcp-flags RST RST -m comment --comment "paqctl" -j DROP 2>/dev/null || true
-        persist_iptables_rules
-        return 0
-    fi
-
-    # iptables path (Debian/Ubuntu/Arch/etc.)
-    modprobe iptable_raw 2>/dev/null || true
-    modprobe iptable_mangle 2>/dev/null || true
-
-    if command -v ufw &>/dev/null && ufw status 2>/dev/null | grep -q "Status: active"; then
-        log_warn "ufw is active — ensure port $port/tcp is allowed: sudo ufw allow $port/tcp"
-    fi
-
-    local TAG="paqctl"
-
-    if iptables -t raw -C PREROUTING -p tcp --dport "$port" -m comment --comment "$TAG" -j NOTRACK 2>/dev/null && \
-       iptables -t raw -C OUTPUT -p tcp --sport "$port" -m comment --comment "$TAG" -j NOTRACK 2>/dev/null && \
-       iptables -t mangle -C OUTPUT -p tcp --sport "$port" -m comment --comment "$TAG" --tcp-flags RST RST -j DROP 2>/dev/null; then
-        log_info "iptables rules already in place"
-    else
-        iptables -t raw -C PREROUTING -p tcp --dport "$port" -m comment --comment "$TAG" -j NOTRACK 2>/dev/null || \
-        iptables -t raw -A PREROUTING -p tcp --dport "$port" -m comment --comment "$TAG" -j NOTRACK 2>/dev/null || {
-            log_error "Failed to add PREROUTING NOTRACK rule"
-            return 1
-        }
-        iptables -t raw -C OUTPUT -p tcp --sport "$port" -m comment --comment "$TAG" -j NOTRACK 2>/dev/null || \
-        iptables -t raw -A OUTPUT -p tcp --sport "$port" -m comment --comment "$TAG" -j NOTRACK 2>/dev/null || {
-            log_error "Failed to add OUTPUT NOTRACK rule"
-            return 1
-        }
-        iptables -t mangle -C OUTPUT -p tcp --sport "$port" -m comment --comment "$TAG" --tcp-flags RST RST -j DROP 2>/dev/null || \
-        iptables -t mangle -A OUTPUT -p tcp --sport "$port" -m comment --comment "$TAG" --tcp-flags RST RST -j DROP 2>/dev/null || {
-            log_error "Failed to add RST DROP rule"
-            return 1
-        }
-        log_success "IPv4 iptables rules applied"
-    fi
-
-    if command -v ip6tables &>/dev/null; then
-        local _ipv6_ok=true
-        ip6tables -t raw -C PREROUTING -p tcp --dport "$port" -m comment --comment "$TAG" -j NOTRACK 2>/dev/null || \
-            ip6tables -t raw -A PREROUTING -p tcp --dport "$port" -m comment --comment "$TAG" -j NOTRACK 2>/dev/null || _ipv6_ok=false
-        ip6tables -t raw -C OUTPUT -p tcp --sport "$port" -m comment --comment "$TAG" -j NOTRACK 2>/dev/null || \
-            ip6tables -t raw -A OUTPUT -p tcp --sport "$port" -m comment --comment "$TAG" -j NOTRACK 2>/dev/null || _ipv6_ok=false
-        ip6tables -t mangle -C OUTPUT -p tcp --sport "$port" -m comment --comment "$TAG" --tcp-flags RST RST -j DROP 2>/dev/null || \
-            ip6tables -t mangle -A OUTPUT -p tcp --sport "$port" -m comment --comment "$TAG" --tcp-flags RST RST -j DROP 2>/dev/null || _ipv6_ok=false
-        if [ "$_ipv6_ok" = true ]; then
-            log_success "IPv6 iptables rules applied"
-        else
-            log_warn "Some IPv6 iptables rules failed (IPv6 may not be available)"
-        fi
-    fi
-
-    # Persist rules
-    persist_iptables_rules
+    _apply_firewall
 }
 
 remove_iptables_rules() {
-    local port="$1"
-    if [ -z "$port" ]; then return 0; fi
-
-    log_info "Removing firewall rules for port $port..."
-
-    # firewalld path
-    if _is_firewalld_active; then
-        firewall-cmd --direct --remove-rule ipv4 raw PREROUTING 0 -p tcp --dport "$port" -m comment --comment "paqctl" -j NOTRACK 2>/dev/null || true
-        firewall-cmd --direct --remove-rule ipv4 raw OUTPUT 0 -p tcp --sport "$port" -m comment --comment "paqctl" -j NOTRACK 2>/dev/null || true
-        firewall-cmd --direct --remove-rule ipv4 mangle OUTPUT 0 -p tcp --sport "$port" --tcp-flags RST RST -m comment --comment "paqctl" -j DROP 2>/dev/null || true
-        firewall-cmd --direct --remove-rule ipv4 filter INPUT 0 -p tcp --dport "$port" -m comment --comment "paqctl" -j DROP 2>/dev/null || true
-        firewall-cmd --direct --remove-rule ipv4 filter OUTPUT 0 -p tcp --sport "$port" --tcp-flags RST RST -m comment --comment "paqctl" -j DROP 2>/dev/null || true
-        # IPv6
-        firewall-cmd --direct --remove-rule ipv6 raw PREROUTING 0 -p tcp --dport "$port" -m comment --comment "paqctl" -j NOTRACK 2>/dev/null || true
-        firewall-cmd --direct --remove-rule ipv6 raw OUTPUT 0 -p tcp --sport "$port" -m comment --comment "paqctl" -j NOTRACK 2>/dev/null || true
-        firewall-cmd --direct --remove-rule ipv6 mangle OUTPUT 0 -p tcp --sport "$port" --tcp-flags RST RST -m comment --comment "paqctl" -j DROP 2>/dev/null || true
-        firewall-cmd --direct --remove-rule ipv6 filter INPUT 0 -p tcp --dport "$port" -m comment --comment "paqctl" -j DROP 2>/dev/null || true
-        firewall-cmd --direct --remove-rule ipv6 filter OUTPUT 0 -p tcp --sport "$port" --tcp-flags RST RST -m comment --comment "paqctl" -j DROP 2>/dev/null || true
-        log_success "firewalld rules removed"
-        return 0
-    fi
-
-    # iptables path
-    local TAG="paqctl"
-    iptables -t raw -D PREROUTING -p tcp --dport "$port" -m comment --comment "$TAG" -j NOTRACK 2>/dev/null || true
-    iptables -t raw -D OUTPUT -p tcp --sport "$port" -m comment --comment "$TAG" -j NOTRACK 2>/dev/null || true
-    iptables -t mangle -D OUTPUT -p tcp --sport "$port" -m comment --comment "$TAG" --tcp-flags RST RST -j DROP 2>/dev/null || true
-    iptables -t raw -D PREROUTING -p tcp --dport "$port" -j NOTRACK 2>/dev/null || true
-    iptables -t raw -D OUTPUT -p tcp --sport "$port" -j NOTRACK 2>/dev/null || true
-    iptables -t mangle -D OUTPUT -p tcp --sport "$port" --tcp-flags RST RST -j DROP 2>/dev/null || true
-    if command -v ip6tables &>/dev/null; then
-        ip6tables -t raw -D PREROUTING -p tcp --dport "$port" -m comment --comment "$TAG" -j NOTRACK 2>/dev/null || true
-        ip6tables -t raw -D OUTPUT -p tcp --sport "$port" -m comment --comment "$TAG" -j NOTRACK 2>/dev/null || true
-        ip6tables -t mangle -D OUTPUT -p tcp --sport "$port" -m comment --comment "$TAG" --tcp-flags RST RST -j DROP 2>/dev/null || true
-        ip6tables -t raw -D PREROUTING -p tcp --dport "$port" -j NOTRACK 2>/dev/null || true
-        ip6tables -t raw -D OUTPUT -p tcp --sport "$port" -j NOTRACK 2>/dev/null || true
-        ip6tables -t mangle -D OUTPUT -p tcp --sport "$port" --tcp-flags RST RST -j DROP 2>/dev/null || true
-    fi
-    log_success "iptables rules removed"
+    _remove_firewall
 }
 
 persist_iptables_rules() {
@@ -2046,88 +1811,8 @@ ROLE="${ROLE}"
 # Source config for ports
 [ -f "\${INSTALL_DIR}/settings.conf" ] && . "\${INSTALL_DIR}/settings.conf"
 
-# Detect firewall backend
-_use_firewalld=false
-if command -v firewall-cmd &>/dev/null && firewall-cmd --state 2>/dev/null | grep -q running; then
-    _use_firewalld=true
-fi
-
-# Apply firewall rules (server + client)
-if [ "\$ROLE" = "server" ]; then
-    port="\${LISTEN_PORT:-8443}"
-    vio_port="\${GFK_VIO_PORT:-45000}"
-    TAG="paqctl"
-    if [ "\$_use_firewalld" = true ]; then
-        # Paqet rules via firewalld
-        firewall-cmd --direct --add-rule ipv4 raw PREROUTING 0 -p tcp --dport "\$port" -m comment --comment "paqctl" -j NOTRACK 2>/dev/null || true
-        firewall-cmd --direct --add-rule ipv4 raw OUTPUT 0 -p tcp --sport "\$port" -m comment --comment "paqctl" -j NOTRACK 2>/dev/null || true
-        firewall-cmd --direct --add-rule ipv4 mangle OUTPUT 0 -p tcp --sport "\$port" --tcp-flags RST RST -m comment --comment "paqctl" -j DROP 2>/dev/null || true
-        # GFK rules via firewalld
-        firewall-cmd --direct --add-rule ipv4 raw PREROUTING 0 -p tcp --dport "\$vio_port" -m comment --comment "paqctl" -j NOTRACK 2>/dev/null || true
-        firewall-cmd --direct --add-rule ipv4 raw OUTPUT 0 -p tcp --sport "\$vio_port" -m comment --comment "paqctl" -j NOTRACK 2>/dev/null || true
-        firewall-cmd --direct --add-rule ipv4 filter INPUT 0 -p tcp --dport "\$vio_port" -m comment --comment "paqctl" -j DROP 2>/dev/null || true
-        firewall-cmd --direct --add-rule ipv4 filter OUTPUT 0 -p tcp --sport "\$vio_port" --tcp-flags RST RST -m comment --comment "paqctl" -j DROP 2>/dev/null || true
-        # IPv6 GFK
-        firewall-cmd --direct --add-rule ipv6 filter INPUT 0 -p tcp --dport "\$vio_port" -m comment --comment "paqctl" -j DROP 2>/dev/null || true
-        firewall-cmd --direct --add-rule ipv6 filter OUTPUT 0 -p tcp --sport "\$vio_port" --tcp-flags RST RST -m comment --comment "paqctl" -j DROP 2>/dev/null || true
-        firewall-cmd --runtime-to-permanent 2>/dev/null || true
-    else
-        # Paqet rules via iptables
-        modprobe iptable_raw 2>/dev/null || true
-        modprobe iptable_mangle 2>/dev/null || true
-        iptables -t raw -C PREROUTING -p tcp --dport "\$port" -m comment --comment "\$TAG" -j NOTRACK 2>/dev/null || \\
-            iptables -t raw -A PREROUTING -p tcp --dport "\$port" -m comment --comment "\$TAG" -j NOTRACK 2>/dev/null
-        iptables -t raw -C OUTPUT -p tcp --sport "\$port" -m comment --comment "\$TAG" -j NOTRACK 2>/dev/null || \\
-            iptables -t raw -A OUTPUT -p tcp --sport "\$port" -m comment --comment "\$TAG" -j NOTRACK 2>/dev/null
-        iptables -t mangle -C OUTPUT -p tcp --sport "\$port" -m comment --comment "\$TAG" --tcp-flags RST RST -j DROP 2>/dev/null || \\
-            iptables -t mangle -A OUTPUT -p tcp --sport "\$port" -m comment --comment "\$TAG" --tcp-flags RST RST -j DROP 2>/dev/null
-        # GFK rules via iptables
-        modprobe iptable_raw 2>/dev/null || true
-        iptables -t raw -C PREROUTING -p tcp --dport "\$vio_port" -m comment --comment "\$TAG" -j NOTRACK 2>/dev/null || \\
-            iptables -t raw -A PREROUTING -p tcp --dport "\$vio_port" -m comment --comment "\$TAG" -j NOTRACK 2>/dev/null
-        iptables -t raw -C OUTPUT -p tcp --sport "\$vio_port" -m comment --comment "\$TAG" -j NOTRACK 2>/dev/null || \\
-            iptables -t raw -A OUTPUT -p tcp --sport "\$vio_port" -m comment --comment "\$TAG" -j NOTRACK 2>/dev/null
-        iptables -C INPUT -p tcp --dport "\$vio_port" -m comment --comment "\$TAG" -j DROP 2>/dev/null || \\
-            iptables -A INPUT -p tcp --dport "\$vio_port" -m comment --comment "\$TAG" -j DROP 2>/dev/null
-        iptables -C OUTPUT -p tcp --sport "\$vio_port" --tcp-flags RST RST -m comment --comment "\$TAG" -j DROP 2>/dev/null || \\
-            iptables -A OUTPUT -p tcp --sport "\$vio_port" --tcp-flags RST RST -m comment --comment "\$TAG" -j DROP 2>/dev/null
-        if command -v ip6tables &>/dev/null; then
-            ip6tables -C INPUT -p tcp --dport "\$vio_port" -m comment --comment "\$TAG" -j DROP 2>/dev/null || \\
-                ip6tables -A INPUT -p tcp --dport "\$vio_port" -m comment --comment "\$TAG" -j DROP 2>/dev/null || true
-            ip6tables -C OUTPUT -p tcp --sport "\$vio_port" --tcp-flags RST RST -m comment --comment "\$TAG" -j DROP 2>/dev/null || \\
-                ip6tables -A OUTPUT -p tcp --sport "\$vio_port" --tcp-flags RST RST -m comment --comment "\$TAG" -j DROP 2>/dev/null || true
-        fi
-    fi
-else
-    # GFK client firewall rules
-    vio_client_port="\${GFK_VIO_CLIENT_PORT:-40000}"
-    TAG="paqctl"
-    if [ "\$_use_firewalld" = true ]; then
-        firewall-cmd --direct --add-rule ipv4 raw PREROUTING 0 -p tcp --dport "\$vio_client_port" -m comment --comment "paqctl" -j NOTRACK 2>/dev/null || true
-        firewall-cmd --direct --add-rule ipv4 raw OUTPUT 0 -p tcp --sport "\$vio_client_port" -m comment --comment "paqctl" -j NOTRACK 2>/dev/null || true
-        firewall-cmd --direct --add-rule ipv4 filter INPUT 0 -p tcp --dport "\$vio_client_port" -m comment --comment "paqctl" -j DROP 2>/dev/null || true
-        firewall-cmd --direct --add-rule ipv4 filter OUTPUT 0 -p tcp --sport "\$vio_client_port" --tcp-flags RST RST -m comment --comment "paqctl" -j DROP 2>/dev/null || true
-        firewall-cmd --direct --add-rule ipv6 filter INPUT 0 -p tcp --dport "\$vio_client_port" -m comment --comment "paqctl" -j DROP 2>/dev/null || true
-        firewall-cmd --direct --add-rule ipv6 filter OUTPUT 0 -p tcp --sport "\$vio_client_port" --tcp-flags RST RST -m comment --comment "paqctl" -j DROP 2>/dev/null || true
-        firewall-cmd --runtime-to-permanent 2>/dev/null || true
-    else
-        modprobe iptable_raw 2>/dev/null || true
-        iptables -t raw -C PREROUTING -p tcp --dport "\$vio_client_port" -m comment --comment "\$TAG" -j NOTRACK 2>/dev/null || \\
-            iptables -t raw -A PREROUTING -p tcp --dport "\$vio_client_port" -m comment --comment "\$TAG" -j NOTRACK 2>/dev/null
-        iptables -t raw -C OUTPUT -p tcp --sport "\$vio_client_port" -m comment --comment "\$TAG" -j NOTRACK 2>/dev/null || \\
-            iptables -t raw -A OUTPUT -p tcp --sport "\$vio_client_port" -m comment --comment "\$TAG" -j NOTRACK 2>/dev/null
-        iptables -C INPUT -p tcp --dport "\$vio_client_port" -m comment --comment "\$TAG" -j DROP 2>/dev/null || \\
-            iptables -A INPUT -p tcp --dport "\$vio_client_port" -m comment --comment "\$TAG" -j DROP 2>/dev/null
-        iptables -C OUTPUT -p tcp --sport "\$vio_client_port" --tcp-flags RST RST -m comment --comment "\$TAG" -j DROP 2>/dev/null || \\
-            iptables -A OUTPUT -p tcp --sport "\$vio_client_port" --tcp-flags RST RST -m comment --comment "\$TAG" -j DROP 2>/dev/null
-        if command -v ip6tables &>/dev/null; then
-            ip6tables -C INPUT -p tcp --dport "\$vio_client_port" -m comment --comment "\$TAG" -j DROP 2>/dev/null || \\
-                ip6tables -A INPUT -p tcp --dport "\$vio_client_port" -m comment --comment "\$TAG" -j DROP 2>/dev/null || true
-            ip6tables -C OUTPUT -p tcp --sport "\$vio_client_port" --tcp-flags RST RST -m comment --comment "\$TAG" -j DROP 2>/dev/null || \\
-                ip6tables -A OUTPUT -p tcp --sport "\$vio_client_port" --tcp-flags RST RST -m comment --comment "\$TAG" -j DROP 2>/dev/null || true
-        fi
-    fi
-fi
+# Apply firewall rules via paqctl
+[ -x /usr/local/bin/paqctl ] && /usr/local/bin/paqctl _apply-firewall 2>/dev/null || true
 
 # Start paqet backend
 (umask 077; touch /var/log/paqet-backend.log)
@@ -2187,6 +1872,7 @@ Wants=network-online.target
 [Service]
 Type=${_svc_type}
 WorkingDirectory=${_working_dir}
+ExecStartPre=/usr/local/bin/paqctl _apply-firewall
 ExecStart=${_exec_start}
 ExecStop=/usr/local/bin/paqctl stop
 ExecStopPost=/usr/local/bin/paqctl _remove-firewall
@@ -3287,6 +2973,35 @@ remove_turbo_mode() {
     log_success "Kernel Turbo Mode disabled."
 }
 
+_watchdog_heal_check() {
+    if [ -f "$INSTALL_DIR/.stopped" ] || [ -f "/run/paqctl.stopped" ]; then
+        return 0
+    fi
+    local _recovered=false
+    local paqet_installed=false gfk_installed=false
+    [ -f "$INSTALL_DIR/bin/paqet" ] && paqet_installed=true
+    if [ "$ROLE" = "server" ]; then
+        [ -d "$GFK_DIR" ] && [ -f "$GFK_DIR/quic_server.py" ] && gfk_installed=true
+    else
+        [ -d "$GFK_DIR" ] && [ -f "$GFK_DIR/quic_client.py" ] && gfk_installed=true
+    fi
+
+    if [ "$paqet_installed" = true ] && [ "$gfk_installed" = true ]; then
+        if ! is_paqet_running; then start_paqet_backend &>/dev/null || true; _recovered=true; fi
+        if ! is_gfk_running; then start_gfk_backend &>/dev/null || true; _recovered=true; fi
+    elif [ "$gfk_installed" = true ] && [ "$BACKEND" = "gfw-knocker" ]; then
+        if ! is_gfk_running; then start_gfk_backend &>/dev/null || true; _recovered=true; fi
+    else
+        if ! is_paqet_running && ! is_running; then start_paqet &>/dev/null || true; _recovered=true; fi
+    fi
+
+    if [ "$_recovered" = true ] && [ "$TELEGRAM_ALERTS_ENABLED" = "true" ]; then
+        send_telegram_alert "⚠️ *Paqctl Watchdog Alert*
+Service was down on \`${TELEGRAM_SERVER_LABEL:-$(hostname)}\`. Auto-recovery triggered!" &>/dev/null || true
+    fi
+    return 0
+}
+
 manage_watchdog() {
     local action="${1:-status}"
     local timer_file="/etc/systemd/system/paqctl-watchdog.timer"
@@ -3312,16 +3027,7 @@ manage_watchdog() {
                 log_success "Watchdog disabled."
                 ;;
             check)
-                if [ -f "$INSTALL_DIR/.stopped" ] || [ -f "/run/paqctl.stopped" ]; then
-                    return 0
-                fi
-                if ! is_running; then
-                    start_paqet &>/dev/null || true
-                    if [ "$TELEGRAM_ALERTS_ENABLED" = "true" ]; then
-                        send_telegram_alert "⚠️ *Paqctl Watchdog Alert*
-Service was down on \`${TELEGRAM_SERVER_LABEL:-$(hostname)}\`. Auto-recovery triggered!" &>/dev/null || true
-                    fi
-                fi
+                _watchdog_heal_check
                 ;;
             *)
                 if [ -f "$cron_file" ] || [ "${WATCHDOG_ENABLED}" = "true" ]; then
@@ -3376,16 +3082,7 @@ EOF
             log_success "Watchdog disabled."
             ;;
         check)
-            if [ -f "$INSTALL_DIR/.stopped" ] || [ -f "/run/paqctl.stopped" ]; then
-                return 0
-            fi
-            if ! is_running; then
-                start_paqet &>/dev/null || true
-                if [ "$TELEGRAM_ALERTS_ENABLED" = "true" ]; then
-                    send_telegram_alert "⚠️ *Paqctl Watchdog Alert*
-Service was down on \`${TELEGRAM_SERVER_LABEL:-$(hostname)}\`. Auto-recovery triggered!" &>/dev/null || true
-                fi
-            fi
+            _watchdog_heal_check
             ;;
         *)
             if [ -f "$timer_file" ] && systemctl is-active paqctl-watchdog.timer &>/dev/null; then
@@ -3418,7 +3115,7 @@ detect_optimal_mtu() {
 
     local mtu=1500
     local found=0
-    if ping -c 1 -W 1 -s 64 "$target" &>/dev/null || ping -c 1 -W 1 127.0.0.1 &>/dev/null; then
+    if ping -c 1 -W 1 -s 64 "$target" &>/dev/null; then
         while [ $mtu -ge 1200 ]; do
             if ping -c 1 -W 1 ${ping_flag} -s $((mtu - 28)) "$target" &>/dev/null; then
                 found=$mtu
@@ -3426,6 +3123,11 @@ detect_optimal_mtu() {
             fi
             mtu=$((mtu - 20))
         done
+    else
+        local _iface_mtu=$(ip link show "${INTERFACE:-$(ip route show default 2>/dev/null | awk '/default/ {print $5}' | head -1)}" 2>/dev/null | grep -o 'mtu [0-9]\+' | awk '{print $2}')
+        if [ -n "$_iface_mtu" ] && [ "$_iface_mtu" -ge 1200 ] 2>/dev/null; then
+            found="$_iface_mtu"
+        fi
     fi
 
     echo ""
@@ -3759,8 +3461,15 @@ start_gfk_backend() {
         return 0
     fi
 
-    if [ ! -d "$GFK_DIR" ] || [ ! -f "$GFK_DIR/quic_server.py" ]; then
-        log_error "gfw-knocker not installed. Use 'Install additional backend' first."
+    if [ ! -d "$GFK_DIR" ]; then
+        log_error "gfw-knocker directory not found."
+        return 1
+    fi
+    if [ "$ROLE" = "server" ] && [ ! -f "$GFK_DIR/quic_server.py" ]; then
+        log_error "gfw-knocker server components not installed. Use 'Install additional backend' first."
+        return 1
+    elif [ "$ROLE" != "server" ] && [ ! -f "$GFK_DIR/quic_client.py" ]; then
+        log_error "gfw-knocker client components not installed. Use 'Install additional backend' first."
         return 1
     fi
 
@@ -6416,6 +6125,18 @@ get_main_pid() {
     fi
 }
 
+is_running() {
+    if [ -n "$(get_main_pid)" ]; then
+        return 0
+    fi
+    if command -v systemctl &>/dev/null && [ -d /run/systemd/system ]; then
+        if systemctl is-active paqctl.service &>/dev/null; then
+            return 0
+        fi
+    fi
+    return 1
+}
+
 build_report() {
     local report="📊 *${BACKEND} Status Report*"$'\n'
     report+="🕐 $(date '+%Y-%m-%d %H:%M %Z')"$'\n\n'
@@ -6845,8 +6566,12 @@ switch_backend() {
     read -p "  Proceed? [y/N]: " confirm < /dev/tty || true
     [[ "$confirm" =~ ^[Yy]$ ]] || { log_info "Cancelled"; return 0; }
 
-    # Stop current
-    stop_paqet
+    # Stop current backend cleanly
+    if [ "$current_backend" = "paqet" ]; then
+        stop_paqet_backend
+    else
+        stop_gfk_backend
+    fi
     _remove_firewall
 
     # Switch to new backend
@@ -6855,7 +6580,16 @@ switch_backend() {
 
     # Setup firewall and start new backend
     _apply_firewall
-    start_paqet
+    if [ "$new_backend" = "gfw-knocker" ]; then
+        start_gfk_backend
+    else
+        start_paqet_backend
+    fi
+
+    # Update systemd unit if systemd is installed and active
+    if command -v systemctl &>/dev/null && [ -d /run/systemd/system ]; then
+        setup_service 2>/dev/null || true
+    fi
 
     log_success "Switched to ${new_backend}"
     read -n 1 -s -r -p "  Press any key..." < /dev/tty || true
@@ -7501,13 +7235,18 @@ except: pass
     # Also try the port-specific removal for backwards compatibility
     _remove_firewall
 
-    # Remove systemd services
+    # Remove systemd services and timers
     if command -v systemctl &>/dev/null; then
+        systemctl stop paqctl-watchdog.timer 2>/dev/null || true
+        systemctl disable paqctl-watchdog.timer 2>/dev/null || true
+        systemctl stop paqctl-watchdog.service 2>/dev/null || true
         systemctl stop paqctl.service 2>/dev/null || true
         systemctl disable paqctl.service 2>/dev/null || true
         systemctl stop paqctl-telegram.service 2>/dev/null || true
         systemctl disable paqctl-telegram.service 2>/dev/null || true
         rm -f /etc/systemd/system/paqctl.service
+        rm -f /etc/systemd/system/paqctl-watchdog.service
+        rm -f /etc/systemd/system/paqctl-watchdog.timer
         rm -f /etc/systemd/system/paqctl-telegram.service
         systemctl daemon-reload 2>/dev/null || true
     fi
@@ -8498,93 +8237,7 @@ main() {
 
     # Step 5: Apply firewall rules
     log_info "Step 5/7: Firewall setup..."
-    if [ "$BACKEND" = "gfw-knocker" ]; then
-        if [ "$ROLE" = "server" ]; then
-            local _vio_port="${GFK_VIO_PORT:-45000}"
-            log_info "Blocking VIO TCP port $_vio_port (raw socket handles it)..."
-            if _is_firewalld_active; then
-                firewall-cmd --direct --query-rule ipv4 raw PREROUTING 0 -p tcp --dport "$_vio_port" -m comment --comment "paqctl" -j NOTRACK 2>/dev/null || \
-                    firewall-cmd --direct --add-rule ipv4 raw PREROUTING 0 -p tcp --dport "$_vio_port" -m comment --comment "paqctl" -j NOTRACK 2>/dev/null || true
-                firewall-cmd --direct --query-rule ipv4 raw OUTPUT 0 -p tcp --sport "$_vio_port" -m comment --comment "paqctl" -j NOTRACK 2>/dev/null || \
-                    firewall-cmd --direct --add-rule ipv4 raw OUTPUT 0 -p tcp --sport "$_vio_port" -m comment --comment "paqctl" -j NOTRACK 2>/dev/null || true
-                firewall-cmd --direct --query-rule ipv4 filter INPUT 0 -p tcp --dport "$_vio_port" -m comment --comment "paqctl" -j DROP 2>/dev/null || \
-                    firewall-cmd --direct --add-rule ipv4 filter INPUT 0 -p tcp --dport "$_vio_port" -m comment --comment "paqctl" -j DROP 2>/dev/null || \
-                    log_warn "Failed to add VIO INPUT DROP rule via firewalld"
-                firewall-cmd --direct --query-rule ipv4 filter OUTPUT 0 -p tcp --sport "$_vio_port" --tcp-flags RST RST -m comment --comment "paqctl" -j DROP 2>/dev/null || \
-                    firewall-cmd --direct --add-rule ipv4 filter OUTPUT 0 -p tcp --sport "$_vio_port" --tcp-flags RST RST -m comment --comment "paqctl" -j DROP 2>/dev/null || \
-                    log_warn "Failed to add VIO RST DROP rule via firewalld"
-                firewall-cmd --direct --query-rule ipv6 filter INPUT 0 -p tcp --dport "$_vio_port" -m comment --comment "paqctl" -j DROP 2>/dev/null || \
-                    firewall-cmd --direct --add-rule ipv6 filter INPUT 0 -p tcp --dport "$_vio_port" -m comment --comment "paqctl" -j DROP 2>/dev/null || true
-                firewall-cmd --direct --query-rule ipv6 filter OUTPUT 0 -p tcp --sport "$_vio_port" --tcp-flags RST RST -m comment --comment "paqctl" -j DROP 2>/dev/null || \
-                    firewall-cmd --direct --add-rule ipv6 filter OUTPUT 0 -p tcp --sport "$_vio_port" --tcp-flags RST RST -m comment --comment "paqctl" -j DROP 2>/dev/null || true
-                persist_iptables_rules
-            elif command -v iptables &>/dev/null; then
-                modprobe iptable_raw 2>/dev/null || true
-                iptables -t raw -C PREROUTING -p tcp --dport "$_vio_port" -m comment --comment "paqctl" -j NOTRACK 2>/dev/null || \
-                    iptables -t raw -I PREROUTING 1 -p tcp --dport "$_vio_port" -m comment --comment "paqctl" -j NOTRACK 2>/dev/null || true
-                iptables -t raw -C OUTPUT -p tcp --sport "$_vio_port" -m comment --comment "paqctl" -j NOTRACK 2>/dev/null || \
-                    iptables -t raw -I OUTPUT 1 -p tcp --sport "$_vio_port" -m comment --comment "paqctl" -j NOTRACK 2>/dev/null || true
-                iptables -C INPUT -p tcp --dport "$_vio_port" -m comment --comment "paqctl" -j DROP 2>/dev/null || \
-                    iptables -I INPUT 1 -p tcp --dport "$_vio_port" -m comment --comment "paqctl" -j DROP 2>/dev/null || \
-                    log_warn "Failed to add VIO INPUT DROP rule"
-                iptables -C OUTPUT -p tcp --sport "$_vio_port" --tcp-flags RST RST -m comment --comment "paqctl" -j DROP 2>/dev/null || \
-                    iptables -I OUTPUT 1 -p tcp --sport "$_vio_port" --tcp-flags RST RST -m comment --comment "paqctl" -j DROP 2>/dev/null || \
-                    log_warn "Failed to add VIO RST DROP rule"
-                if command -v ip6tables &>/dev/null; then
-                    ip6tables -C INPUT -p tcp --dport "$_vio_port" -m comment --comment "paqctl" -j DROP 2>/dev/null || \
-                        ip6tables -I INPUT 1 -p tcp --dport "$_vio_port" -m comment --comment "paqctl" -j DROP 2>/dev/null || true
-                    ip6tables -C OUTPUT -p tcp --sport "$_vio_port" --tcp-flags RST RST -m comment --comment "paqctl" -j DROP 2>/dev/null || \
-                        ip6tables -I OUTPUT 1 -p tcp --sport "$_vio_port" --tcp-flags RST RST -m comment --comment "paqctl" -j DROP 2>/dev/null || true
-                fi
-            else
-                log_warn "iptables not found - firewall rules cannot be applied"
-            fi
-        else
-            local _vio_client_port="${GFK_VIO_CLIENT_PORT:-40000}"
-            log_info "Applying NOTRACK + DROP rules for VIO client port $_vio_client_port..."
-            if _is_firewalld_active; then
-                firewall-cmd --direct --query-rule ipv4 raw PREROUTING 0 -p tcp --dport "$_vio_client_port" -m comment --comment "paqctl" -j NOTRACK 2>/dev/null || \
-                    firewall-cmd --direct --add-rule ipv4 raw PREROUTING 0 -p tcp --dport "$_vio_client_port" -m comment --comment "paqctl" -j NOTRACK 2>/dev/null || true
-                firewall-cmd --direct --query-rule ipv4 raw OUTPUT 0 -p tcp --sport "$_vio_client_port" -m comment --comment "paqctl" -j NOTRACK 2>/dev/null || \
-                    firewall-cmd --direct --add-rule ipv4 raw OUTPUT 0 -p tcp --sport "$_vio_client_port" -m comment --comment "paqctl" -j NOTRACK 2>/dev/null || true
-                firewall-cmd --direct --query-rule ipv4 filter INPUT 0 -p tcp --dport "$_vio_client_port" -m comment --comment "paqctl" -j DROP 2>/dev/null || \
-                    firewall-cmd --direct --add-rule ipv4 filter INPUT 0 -p tcp --dport "$_vio_client_port" -m comment --comment "paqctl" -j DROP 2>/dev/null || \
-                    log_warn "Failed to add VIO client INPUT DROP rule via firewalld"
-                firewall-cmd --direct --query-rule ipv4 filter OUTPUT 0 -p tcp --sport "$_vio_client_port" --tcp-flags RST RST -m comment --comment "paqctl" -j DROP 2>/dev/null || \
-                    firewall-cmd --direct --add-rule ipv4 filter OUTPUT 0 -p tcp --sport "$_vio_client_port" --tcp-flags RST RST -m comment --comment "paqctl" -j DROP 2>/dev/null || \
-                    log_warn "Failed to add VIO client RST DROP rule via firewalld"
-                firewall-cmd --direct --query-rule ipv6 filter INPUT 0 -p tcp --dport "$_vio_client_port" -m comment --comment "paqctl" -j DROP 2>/dev/null || \
-                    firewall-cmd --direct --add-rule ipv6 filter INPUT 0 -p tcp --dport "$_vio_client_port" -m comment --comment "paqctl" -j DROP 2>/dev/null || true
-                firewall-cmd --direct --query-rule ipv6 filter OUTPUT 0 -p tcp --sport "$_vio_client_port" --tcp-flags RST RST -m comment --comment "paqctl" -j DROP 2>/dev/null || \
-                    firewall-cmd --direct --add-rule ipv6 filter OUTPUT 0 -p tcp --sport "$_vio_client_port" --tcp-flags RST RST -m comment --comment "paqctl" -j DROP 2>/dev/null || true
-                persist_iptables_rules
-            elif command -v iptables &>/dev/null; then
-                modprobe iptable_raw 2>/dev/null || true
-                iptables -t raw -C PREROUTING -p tcp --dport "$_vio_client_port" -m comment --comment "paqctl" -j NOTRACK 2>/dev/null || \
-                    iptables -t raw -I PREROUTING 1 -p tcp --dport "$_vio_client_port" -m comment --comment "paqctl" -j NOTRACK 2>/dev/null || true
-                iptables -t raw -C OUTPUT -p tcp --sport "$_vio_client_port" -m comment --comment "paqctl" -j NOTRACK 2>/dev/null || \
-                    iptables -t raw -I OUTPUT 1 -p tcp --sport "$_vio_client_port" -m comment --comment "paqctl" -j NOTRACK 2>/dev/null || true
-                iptables -C INPUT -p tcp --dport "$_vio_client_port" -m comment --comment "paqctl" -j DROP 2>/dev/null || \
-                    iptables -I INPUT 1 -p tcp --dport "$_vio_client_port" -m comment --comment "paqctl" -j DROP 2>/dev/null || \
-                    log_warn "Failed to add VIO client INPUT DROP rule"
-                iptables -C OUTPUT -p tcp --sport "$_vio_client_port" --tcp-flags RST RST -m comment --comment "paqctl" -j DROP 2>/dev/null || \
-                    iptables -I OUTPUT 1 -p tcp --sport "$_vio_client_port" --tcp-flags RST RST -m comment --comment "paqctl" -j DROP 2>/dev/null || \
-                    log_warn "Failed to add VIO client RST DROP rule"
-                if command -v ip6tables &>/dev/null; then
-                    ip6tables -C INPUT -p tcp --dport "$_vio_client_port" -m comment --comment "paqctl" -j DROP 2>/dev/null || \
-                        ip6tables -I INPUT 1 -p tcp --dport "$_vio_client_port" -m comment --comment "paqctl" -j DROP 2>/dev/null || true
-                    ip6tables -C OUTPUT -p tcp --sport "$_vio_client_port" --tcp-flags RST RST -m comment --comment "paqctl" -j DROP 2>/dev/null || \
-                        ip6tables -I OUTPUT 1 -p tcp --sport "$_vio_client_port" --tcp-flags RST RST -m comment --comment "paqctl" -j DROP 2>/dev/null || true
-                fi
-            else
-                log_warn "iptables not found - firewall rules cannot be applied"
-            fi
-        fi
-    elif [ "$ROLE" = "server" ]; then
-        apply_iptables_rules "$LISTEN_PORT"
-    else
-        log_info "Client mode - no firewall rules needed"
-    fi
+    _apply_firewall
     echo ""
 
     # Step 6: Create service + management script

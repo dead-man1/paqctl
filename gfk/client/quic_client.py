@@ -50,11 +50,13 @@ class TunnelClientProtocol(QuicConnectionProtocol):
         super().connection_lost(exc)
         self.close_all_tcp_connections()
         logger.info("QUIC connection lost. exit")
-        for protocol in active_protocols:
-            protocol.close_all_tcp_connections()
-            protocol.close_all_udp_connections()
-            protocol.close()
-            protocol = None
+        for protocol in list(active_protocols):
+            try:
+                protocol.close_all_tcp_connections()
+                protocol.close_all_udp_connections()
+                protocol.close()
+            except Exception:
+                pass
         if self in active_protocols:
             active_protocols.remove(self)
         time.sleep(1)
@@ -210,6 +212,8 @@ class TunnelClientProtocol(QuicConnectionProtocol):
             return stream_id
         except Exception as e:
             logger.info(f"Client Error creating new udp stream: {e}")
+            if 'stream_id' in locals() and stream_id is not None:
+                self.close_this_stream(stream_id)
         return None
 
     async def _safe_writer_drain(self, writer):
@@ -243,6 +247,7 @@ class TunnelClientProtocol(QuicConnectionProtocol):
 
             except Exception as e:
                 logger.info(f"Quic event client error: {e}")
+                self.close_this_stream(event.stream_id)
 
         elif isinstance(event, StreamReset):
             logger.info(f"Stream {event.stream_id} reset unexpectedly.")

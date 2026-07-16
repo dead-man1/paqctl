@@ -39,14 +39,20 @@ class TunnelServerProtocol(QuicConnectionProtocol):
         logger.info("Closing all TCP connections from server...")
         for stream_id, (reader, writer) in self.tcp_connections.items():
             logger.info(f"Closing TCP connection for stream {stream_id}...")
-            writer.close()
+            try:
+                writer.close()
+            except Exception as e:
+                logger.info(f"Error closing tcp socket at server: {e}")
         self.tcp_connections.clear()
 
     def close_all_udp_connections(self):
         logger.info("Closing all UDP connections from server...")
         for stream_id, (transport, _) in self.udp_connections.items():
             logger.info(f"Closing UDP connection for stream {stream_id}...")
-            transport.close()
+            try:
+                transport.close()
+            except Exception as e:
+                logger.info(f"Error closing udp socket at server: {e}")
         self.udp_connections.clear()
         self.udp_last_activity.clear()
 
@@ -190,6 +196,7 @@ class TunnelServerProtocol(QuicConnectionProtocol):
             asyncio.create_task(self.forward_udp_to_quic(stream_id, protocol))
         except Exception as e:
             logger.info(f"Failed to establish UDP connection: {e}")
+            self.close_this_stream(stream_id)
 
 
 
@@ -267,6 +274,7 @@ class TunnelServerProtocol(QuicConnectionProtocol):
 
             except Exception as e:
                 logger.info(f"Quic event server error: {e}")
+                self.close_this_stream(event.stream_id)
 
         elif isinstance(event, StreamReset):
             # Handle stream reset (client closed the stream)
@@ -296,10 +304,13 @@ async def run_server():
 
 def handle_shutdown(signum, frame):
     logger.info("Shutting down server gracefully...")
-    for protocol in active_protocols:
-        protocol.close_all_tcp_connections()
-        protocol.close_all_udp_connections()
-        protocol.close()
+    for protocol in list(active_protocols):
+        try:
+            protocol.close_all_tcp_connections()
+            protocol.close_all_udp_connections()
+            protocol.close()
+        except Exception:
+            pass
     logger.info("Server shutdown complete.")
     sys.exit(0)
 

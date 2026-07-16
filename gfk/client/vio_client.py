@@ -70,7 +70,10 @@ async def forward_vio_to_quic(qu1, transport):
             data = await qu1.get()
             if data == None:
                 break
-            transport.sendto(data, addr)
+            try:
+                transport.sendto(data, addr)
+            except Exception as pkt_err:
+                logger.debug(f"Dropped packet in forward_vio_to_quic: {pkt_err}")
     except Exception as e:
         logger.info(f"Error forwarding vio to Quic: {e}")
     finally:
@@ -103,7 +106,10 @@ async def forward_quic_to_vio(protocol):
             data = await protocol.queue.get()
             if data == None:
                 break
-            send_to_violated_TCP(data)
+            try:
+                send_to_violated_TCP(data)
+            except Exception as pkt_err:
+                logger.debug(f"Dropped packet in forward_quic_to_vio: {pkt_err}")
     except Exception as e:
         logger.info(f"Error forwarding QUIC to vio: {e}")
     finally:
@@ -112,6 +118,9 @@ async def forward_quic_to_vio(protocol):
 
 async def start_udp_server(qu1):
     while True:
+        transport = None
+        task1 = None
+        task2 = None
         try:
             logger.warning(f"listen quic:{vio_udp_client_port} -> violated tcp:{vio_tcp_server_port}")
             loop = asyncio.get_event_loop()
@@ -125,18 +134,31 @@ async def start_udp_server(qu1):
             while True:
                 await asyncio.sleep(0.02)
                 if udp_protocol.has_error:
-                    task1.cancel()
-                    task2.cancel()
+                    if task1 and not task1.done():
+                        task1.cancel()
+                    if task2 and not task2.done():
+                        task2.cancel()
                     await asyncio.sleep(1)
-                    logger.info(f"all task cancelled")
+                    logger.info("all task cancelled")
                     break
 
         except Exception as e:
             logger.info(f"vioclient ERR: {e}")
         finally:
-            transport.close()
-            await asyncio.sleep(0.5)
-            transport.abort()
+            if task1 and not task1.done():
+                task1.cancel()
+            if task2 and not task2.done():
+                task2.cancel()
+            if transport:
+                try:
+                    transport.close()
+                except Exception:
+                    pass
+                await asyncio.sleep(0.5)
+                try:
+                    transport.abort()
+                except Exception:
+                    pass
             logger.info("aborting transport ...")
             await asyncio.sleep(1.5)
             logger.info("vio inner finished")
@@ -166,14 +188,20 @@ class UdpProtocol:
         logger.info(f"UDP error received: {exc}")
         self.has_error = True
         if self.transport:
-            self.transport.close()
+            try:
+                self.transport.close()
+            except Exception:
+                pass
             logger.info("UDP transport closed")
 
     def connection_lost(self, exc):
         logger.info(f"UDP lost. {exc}")
         self.has_error = True
         if self.transport:
-            self.transport.close()
+            try:
+                self.transport.close()
+            except Exception:
+                pass
             logger.info("UDP transport closed")
 
 
