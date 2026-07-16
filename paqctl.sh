@@ -6125,18 +6125,6 @@ get_main_pid() {
     fi
 }
 
-is_running() {
-    if [ -n "$(get_main_pid)" ]; then
-        return 0
-    fi
-    if command -v systemctl &>/dev/null && [ -d /run/systemd/system ]; then
-        if systemctl is-active paqctl.service &>/dev/null; then
-            return 0
-        fi
-    fi
-    return 1
-}
-
 build_report() {
     local report="📊 *${BACKEND} Status Report*"$'\n'
     report+="🕐 $(date '+%Y-%m-%d %H:%M %Z')"$'\n\n'
