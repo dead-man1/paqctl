@@ -2632,9 +2632,14 @@ _validate_version_tag() {
 _sed_escape() { printf '%s\n' "$1" | sed 's/[&/\]/\\&/g'; }
 _safe_update_setting() {
     local key="$1" value="$2" file="$3"
-    local escaped_value
-    escaped_value=$(_sed_escape "$value")
-    sed "s/^${key}=.*/${key}=\"${escaped_value}\"/" "$file" > "$file.tmp" 2>/dev/null && mv "$file.tmp" "$file" || true
+    [ ! -f "$file" ] && touch "$file" 2>/dev/null
+    if grep -q "^${key}=" "$file" 2>/dev/null; then
+        local escaped_value
+        escaped_value=$(_sed_escape "$value")
+        sed "s/^${key}=.*/${key}=\"${escaped_value}\"/" "$file" > "$file.tmp" 2>/dev/null && mv "$file.tmp" "$file" || true
+    else
+        echo "${key}=\"${value}\"" >> "$file" 2>/dev/null || true
+    fi
 }
 
 print_header() {
@@ -3464,20 +3469,31 @@ select_performance_profile() {
     echo ""
     read -p "  Select Profile [1-4, default: 1]: " p_choice < /dev/tty || true
     p_choice="${p_choice:-1}"
+    local _profile_mtu=1350
     case "$p_choice" in
         2)
-            KCP_PROFILE="highloss"; KCP_CONN=4; KCP_MTU=1300; KCP_SNDWND=1024; KCP_RCVWND=1024
+            KCP_PROFILE="highloss"; KCP_CONN=4; _profile_mtu=1300; KCP_SNDWND=1024; KCP_RCVWND=1024
             KCP_NODELAY=0; KCP_INTERVAL=20; KCP_RESEND=2; KCP_NOCONGESTION=0; KCP_SOCKBUF=4194304; KCP_SMUXBUF=4194304 ;;
         3)
-            KCP_PROFILE="cdntunnel"; KCP_CONN=8; KCP_MTU=1400; KCP_SNDWND=2048; KCP_RCVWND=2048
+            KCP_PROFILE="cdntunnel"; KCP_CONN=8; _profile_mtu=1400; KCP_SNDWND=2048; KCP_RCVWND=2048
             KCP_NODELAY=0; KCP_INTERVAL=20; KCP_RESEND=2; KCP_NOCONGESTION=0; KCP_SOCKBUF=8388608; KCP_SMUXBUF=8388608 ;;
         4)
-            KCP_PROFILE="gaming"; KCP_CONN=2; KCP_MTU=1200; KCP_SNDWND=512; KCP_RCVWND=512
+            KCP_PROFILE="gaming"; KCP_CONN=2; _profile_mtu=1200; KCP_SNDWND=512; KCP_RCVWND=512
             KCP_NODELAY=1; KCP_INTERVAL=10; KCP_RESEND=2; KCP_NOCONGESTION=1; KCP_SOCKBUF=4194304; KCP_SMUXBUF=4194304 ;;
         *)
-            KCP_PROFILE="standard"; KCP_CONN=2; KCP_MTU=1350; KCP_SNDWND=1024; KCP_RCVWND=1024
+            KCP_PROFILE="standard"; KCP_CONN=2; _profile_mtu=1350; KCP_SNDWND=1024; KCP_RCVWND=1024
             KCP_NODELAY=0; KCP_INTERVAL=20; KCP_RESEND=2; KCP_NOCONGESTION=0; KCP_SOCKBUF=4194304; KCP_SMUXBUF=4194304 ;;
     esac
+    local _curr_mtu=$(grep -E "^KCP_MTU=" "$INSTALL_DIR/settings.conf" 2>/dev/null | cut -d'=' -f2 | tr -d '"' || echo "")
+    if [ -n "$_curr_mtu" ] && [ "$_curr_mtu" -gt 0 ] 2>/dev/null; then
+        if [ "$_profile_mtu" -lt "$_curr_mtu" ] 2>/dev/null; then
+            KCP_MTU="$_profile_mtu"
+        else
+            KCP_MTU="$_curr_mtu"
+        fi
+    else
+        KCP_MTU="$_profile_mtu"
+    fi
     save_settings 2>/dev/null || true
 }
 
@@ -3503,13 +3519,19 @@ tune_menu() {
         case "$t_choice" in
             1)
                 select_performance_profile
-                generate_paqet_yaml "$INSTALL_DIR/config.yaml"
-                log_success "Profile applied to config.yaml"
+                if [ -d "$INSTALL_DIR" ]; then generate_paqet_yaml "$INSTALL_DIR/config.yaml" 2>/dev/null || true; fi
+                if [ -d "$GFK_DIR" ] && [ "$BACKEND" = "gfw-knocker" ]; then generate_gfk_config 2>/dev/null || true; fi
+                if systemctl is-active --quiet paqet 2>/dev/null; then systemctl restart paqet 2>/dev/null || true; fi
+                if systemctl is-active --quiet paqet-gfk 2>/dev/null; then systemctl restart paqet-gfk 2>/dev/null || true; fi
+                log_success "Profile & MTU applied and service restarted!"
                 ;;
             2)
                 detect_optimal_mtu
-                generate_paqet_yaml "$INSTALL_DIR/config.yaml"
-                log_success "Optimal MTU applied to config.yaml"
+                if [ -d "$INSTALL_DIR" ]; then generate_paqet_yaml "$INSTALL_DIR/config.yaml" 2>/dev/null || true; fi
+                if [ -d "$GFK_DIR" ] && [ "$BACKEND" = "gfw-knocker" ]; then generate_gfk_config 2>/dev/null || true; fi
+                if systemctl is-active --quiet paqet 2>/dev/null; then systemctl restart paqet 2>/dev/null || true; fi
+                if systemctl is-active --quiet paqet-gfk 2>/dev/null; then systemctl restart paqet-gfk 2>/dev/null || true; fi
+                log_success "Optimal MTU applied and service restarted!"
                 ;;
             3)
                 if [ "${TURBO_ENABLED}" = "true" ]; then
@@ -3740,6 +3762,10 @@ start_gfk_backend() {
     if [ ! -d "$GFK_DIR" ] || [ ! -f "$GFK_DIR/quic_server.py" ]; then
         log_error "gfw-knocker not installed. Use 'Install additional backend' first."
         return 1
+    fi
+
+    if [ ! -f "$GFK_DIR/parameters.py" ]; then
+        generate_gfk_config 2>/dev/null || true
     fi
 
     log_info "Starting gfw-knocker backend..."
@@ -5936,7 +5962,12 @@ export_config_string() {
         if [ -z "$key" ] && [ -f "$INSTALL_DIR/config.yaml" ]; then
             key=$(grep -E "^key:" "$INSTALL_DIR/config.yaml" 2>/dev/null | awk '{print $2}' | tr -d '"' || echo "")
         fi
-        local raw_str="paqet|${_ip}|${port}|${key}|${SOCKS_PORT:-1080}|${ROUTING_MODE:-socks5}|${FORWARD_PORT:-14000}|${FORWARD_TARGET:-127.0.0.1:80}|${KCP_PROFILE:-standard}|${KCP_MTU:-1350}"
+        local _mtu="${KCP_MTU:-}"
+        if [ -z "$_mtu" ] && [ -f "$INSTALL_DIR/config.yaml" ]; then
+            _mtu=$(grep -E "^mtu:" "$INSTALL_DIR/config.yaml" 2>/dev/null | awk '{print $2}' | tr -d '"' || echo "")
+        fi
+        _mtu="${_mtu:-1350}"
+        local raw_str="paqet|${_ip}|${port}|${key}|${SOCKS_PORT:-1080}|${ROUTING_MODE:-socks5}|${FORWARD_PORT:-14000}|${FORWARD_TARGET:-127.0.0.1:80}|${KCP_PROFILE:-standard}|${_mtu}"
         local b64=$(echo -n "$raw_str" | base64 | tr -d '\r\n')
         echo -e "  ${BOLD}Shareable Paqet Client String (v2 format):${NC}"
         echo -e "  ${GREEN}paqet://${b64}${NC}"
@@ -6042,6 +6073,8 @@ import_config_string() {
         _safe_update_setting "GFK_AUTH_CODE" "$_auth" "$INSTALL_DIR/settings.conf"
         [ -n "$_map" ] && _safe_update_setting "GFK_PORT_MAPPINGS" "$_map" "$INSTALL_DIR/settings.conf"
         [ -n "$_socks" ] && _safe_update_setting "GFK_SOCKS_VIO_PORT" "$_socks" "$INSTALL_DIR/settings.conf"
+        _load_settings
+        generate_gfk_config 2>/dev/null || true
         log_success "GFK client configuration imported! Restarting service..."
         stop_gfk_backend || true; start_gfk_backend || true
     else

@@ -294,8 +294,9 @@ function Get-Setting {
     if (Test-Path $SettingsFile) {
         $content = Get-Content $SettingsFile -ErrorAction SilentlyContinue
         foreach ($line in $content) {
-            if ($line -match "^$Key=`"?(.*?)`"?$") {
-                return $Matches[1]
+            if ($line -match "^$Key=(.*)$") {
+                $val = $Matches[1] -replace '^"|"$','' -replace "^'|'$",''
+                return $val
             }
         }
     }
@@ -318,8 +319,8 @@ function Save-Settings {
     $existing = @{}
     if (Test-Path $SettingsFile) {
         Get-Content $SettingsFile -ErrorAction SilentlyContinue | ForEach-Object {
-            if ($_ -match '^([^=]+)="?(.*)"?$') {
-                $existing[$Matches[1]] = $Matches[2]
+            if ($_ -match '^([^=]+)=(.*)$') {
+                $existing[$Matches[1]] = ($Matches[2] -replace '^"|"$','' -replace "^'|'$",'')
             }
         }
     }
@@ -437,19 +438,28 @@ function New-PaqetConfig {
         $TcpRemoteFlag = "PA"
     }
 
+    $profileMtu = 1350
     switch ($KcpProfile.ToLower()) {
         "highloss" {
-            $KcpConn = 4; $KcpMtu = 1300; $KcpSndWnd = 1024; $KcpRcvWnd = 1024
+            $KcpConn = 4; $profileMtu = 1300; $KcpSndWnd = 1024; $KcpRcvWnd = 1024
             $KcpNoDelay = 0; $KcpInterval = 20; $KcpResend = 2; $KcpNoCongestion = 0; $KcpSockBuf = 4194304; $KcpSmuxBuf = 4194304
         }
         "cdntunnel" {
-            $KcpConn = 8; $KcpMtu = 1400; $KcpSndWnd = 2048; $KcpRcvWnd = 2048
+            $KcpConn = 8; $profileMtu = 1400; $KcpSndWnd = 2048; $KcpRcvWnd = 2048
             $KcpNoDelay = 0; $KcpInterval = 20; $KcpResend = 2; $KcpNoCongestion = 0; $KcpSockBuf = 8388608; $KcpSmuxBuf = 8388608
         }
         "gaming" {
-            $KcpConn = 2; $KcpMtu = 1200; $KcpSndWnd = 512; $KcpRcvWnd = 512
+            $KcpConn = 2; $profileMtu = 1200; $KcpSndWnd = 512; $KcpRcvWnd = 512
             $KcpNoDelay = 1; $KcpInterval = 10; $KcpResend = 2; $KcpNoCongestion = 1; $KcpSockBuf = 4194304; $KcpSmuxBuf = 4194304
         }
+    }
+    $existingMtu = Get-Setting -Key "KCP_MTU" -DefaultValue ""
+    if ($KcpMtu -gt 0 -and $KcpMtu -ne 1350) {
+        if ($profileMtu -gt 0 -and $profileMtu -lt $KcpMtu) { $KcpMtu = $profileMtu }
+    } elseif ($existingMtu -match '^\d+$' -and [int]$existingMtu -gt 0) {
+        if ($profileMtu -gt 0 -and $profileMtu -lt [int]$existingMtu) { $KcpMtu = $profileMtu } else { $KcpMtu = [int]$existingMtu }
+    } else {
+        $KcpMtu = $profileMtu
     }
 
     Write-Info "Detecting network..."
@@ -1210,7 +1220,9 @@ function Manage-ConfigString {
             $fport = Get-Setting -Key "FORWARD_PORT" -DefaultValue "14000"
             $ftgt = Get-Setting -Key "FORWARD_TARGET" -DefaultValue "127.0.0.1:80"
             $prof = Get-Setting -Key "KCP_PROFILE" -DefaultValue "standard"
-            $mtu = Get-Setting -Key "KCP_MTU" -DefaultValue "1350"
+            $mtu = Get-Setting -Key "KCP_MTU" -DefaultValue ""
+            if (-not $mtu -and $content -match 'mtu:\s*(\d+)') { $mtu = $Matches[1] }
+            if (-not $mtu) { $mtu = "1350" }
             $ip = $server; $port = "8443"
             if ($server -match '^([0-9a-zA-Z\.\-_]+|\[[0-9a-fA-F:]+\]):([0-9]+)$') {
                 $ip = $Matches[1]; $port = $Matches[2]
@@ -1268,12 +1280,11 @@ function Manage-ConfigString {
 
             Write-Info "Importing Paqet config ($server)..."
             if (-not (Test-Path $InstallDir)) { New-Item -ItemType Directory -Path $InstallDir -Force | Out-Null }
-            New-PaqetConfig -Server $server -SecretKey $key -RoutingMode $rmode -SocksPort $socks -ForwardPort $fport -ForwardTarget $ftgt -KcpProfile $prof | Out-Null
             Save-Settings -Backend "paqet" -ServerAddr $server -SocksPort $socks -RoutingMode $rmode -ForwardPort $fport -ForwardTarget $ftgt -KcpProfile $prof
             $existing = @{}
             if (Test-Path "$InstallDir\settings.conf") {
                 Get-Content "$InstallDir\settings.conf" -ErrorAction SilentlyContinue | ForEach-Object {
-                    if ($_ -match '^([^=]+)="?(.*)"?$') { $existing[$Matches[1]] = $Matches[2] }
+                    if ($_ -match '^([^=]+)=(.*)$') { $existing[$Matches[1]] = ($Matches[2] -replace '^"|"$','' -replace "^'|'$",'') }
                 }
             }
             if ($existing.ContainsKey("KCP_MTU") -and [int]$existing["KCP_MTU"] -gt 0 -and [int]$existing["KCP_MTU"] -lt [int]$mtu) {
@@ -1284,6 +1295,7 @@ function Manage-ConfigString {
             $lines = @()
             foreach ($k in $existing.Keys) { $lines += "$k=`"$($existing[$k])`"" }
             [System.IO.File]::WriteAllLines("$InstallDir\settings.conf", $lines)
+            New-PaqetConfig -Server $server -SecretKey $key -RoutingMode $rmode -SocksPort $socks -ForwardPort $fport -ForwardTarget $ftgt -KcpProfile $prof -KcpMtu [int]$mtu | Out-Null
             Write-Success "Paqet config imported & MTU synchronized ($mtu)! Starting service..."
             Start-Paqet
         } elseif ($str -match '^gfk://(.+)$') {
@@ -1347,7 +1359,8 @@ function Apply-ClientConfig {
         $fport = Get-Setting -Key "FORWARD_PORT" -DefaultValue "14000"
         $ftgt = Get-Setting -Key "FORWARD_TARGET" -DefaultValue "127.0.0.1:80"
         $prof = Get-Setting -Key "KCP_PROFILE" -DefaultValue "standard"
-        New-PaqetConfig -Server $server -SecretKey $key -RoutingMode $rmode -SocksPort $socks -ForwardPort $fport -ForwardTarget $ftgt -KcpProfile $prof | Out-Null
+        $mtu = [int](Get-Setting -Key "KCP_MTU" -DefaultValue "1350")
+        New-PaqetConfig -Server $server -SecretKey $key -RoutingMode $rmode -SocksPort $socks -ForwardPort $fport -ForwardTarget $ftgt -KcpProfile $prof -KcpMtu $mtu | Out-Null
     }
 }
 
@@ -1401,7 +1414,7 @@ function Select-PerformanceProfile {
     $existing = @{}
     if (Test-Path $SettingsFile) {
         Get-Content $SettingsFile -ErrorAction SilentlyContinue | ForEach-Object {
-            if ($_ -match '^([^=]+)="?(.*)"?$') { $existing[$Matches[1]] = $Matches[2] }
+            if ($_ -match '^([^=]+)=(.*)$') { $existing[$Matches[1]] = ($Matches[2] -replace '^"|"$','' -replace "^'|'$",'') }
         }
     }
     $existing["KCP_PROFILE"] = $profile; $existing["KCP_CONN"] = $conn; $existing["KCP_MTU"] = $mtu
@@ -1444,7 +1457,7 @@ function Find-OptimalMtu {
     $existing = @{}
     if (Test-Path $SettingsFile) {
         Get-Content $SettingsFile -ErrorAction SilentlyContinue | ForEach-Object {
-            if ($_ -match '^([^=]+)="?(.*)"?$') { $existing[$Matches[1]] = $Matches[2] }
+            if ($_ -match '^([^=]+)=(.*)$') { $existing[$Matches[1]] = ($Matches[2] -replace '^"|"$','' -replace "^'|'$",'') }
         }
     }
     $existing["KCP_MTU"] = "$found"
@@ -1541,8 +1554,8 @@ function Show-TuningMenu {
         Write-Host ""
         $choice = Read-Host "  Select option [1-5/0]"
         switch ($choice) {
-            "1" { Select-PerformanceProfile; Apply-ClientConfig; Write-Info "Profile applied to config.yaml" }
-            "2" { Find-OptimalMtu; Apply-ClientConfig; Write-Info "Optimal MTU applied to config.yaml" }
+            "1" { Select-PerformanceProfile; Apply-ClientConfig; Restart-ClientService; Write-Info "Profile applied and client restarted!" }
+            "2" { Find-OptimalMtu; Apply-ClientConfig; Restart-ClientService; Write-Info "Optimal MTU applied and client restarted!" }
             "3" { Toggle-WindowsTurbo }
             "4" { Toggle-Watchdog }
             "5" { Apply-ClientConfig; Restart-ClientService }
